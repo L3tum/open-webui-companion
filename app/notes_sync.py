@@ -265,7 +265,7 @@ async def owui_health() -> dict:
         return {"status": "error", "message": "Open-WebUI is not configured"}
 
     try:
-        response = await _owui_request("GET", "/notes", params={"count": 1})
+        await _owui_request("GET", "/notes", params={"count": 1})
         return {
             "status": "ok",
             "instance": settings.OWUI_INSTANCE_URL,
