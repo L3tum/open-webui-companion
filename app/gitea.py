@@ -152,14 +152,9 @@ async def create_file(file: FileCreate) -> dict:
     Create or update a file in a repository.
 
     Creates a new file or updates an existing one with the provided content.
+    For updates, the existing file's SHA is fetched first to satisfy the API requirement.
     """
-    logger.info(
-        "Creating/updating file",
-        owner=file.owner,
-        repo=file.repo,
-        path=file.path,
-        branch=file.branch or "default",
-    )
+    # ... logging ...
 
     encoded_content = base64.b64encode(file.content.encode()).decode()
     payload = {"content": encoded_content, "message": file.message}
@@ -167,13 +162,26 @@ async def create_file(file: FileCreate) -> dict:
     if file.branch:
         payload["branch"] = file.branch
 
+    # NEW: Check if the file already exists — if so, we need its SHA for the update
+    ref = file.branch if file.branch else None
+    try:
+        existing = await _gitea_request(
+            "GET",
+            f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
+            params={"ref": ref} if ref else {},
+        )
+        payload["sha"] = existing["sha"]
+    except GiteaError as e:
+        if e.status_code == 404:
+            pass  # File doesn't exist, no SHA needed for creation
+        else:
+            logger.warning("Unexpected error checking for existing file", error=str(e))
+
     result = await _gitea_request(
         "PUT",
         f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
         json=payload,
     )
-
-    logger.info("File written", owner=file.owner, repo=file.repo, path=file.path)
     return result
 
 
