@@ -65,17 +65,50 @@ async def _owui_request(method: str, path: str, **kwargs) -> dict:
 
 
 async def _fetch_notes() -> list:
-    """Fetch all notes from Open-WebUI."""
-    try:
-        notes = await _owui_request("GET", "/notes")
-        if isinstance(notes, dict) and "results" in notes:
-            return notes["results"]
-        return notes if isinstance(notes, list) else []
-    except OWUIError:
-        raise
-    except Exception as e:
-        logger.error("Failed to fetch notes", error=str(e))
-        raise OWUIError(f"Failed to fetch notes: {e}") from e
+    """Fetch all notes from Open-WebUI.
+
+    Tries multiple known endpoints since the notes API path has changed
+    across Open-WebUI versions and may not be publicly documented.
+    """
+    endpoints = [
+        "/api/v1/notes",
+        "/api/notes",
+        "/api/v1/workspace/notes",
+        "/notes",
+    ]
+
+    for path in endpoints:
+        try:
+            response = await _owui_request("GET", path)
+            # Handle various response formats
+            if isinstance(response, list):
+                logger.info("Notes fetched successfully", endpoint=path, count=len(response))
+                return response
+            if isinstance(response, dict):
+                if "results" in response:
+                    logger.info("Notes fetched successfully", endpoint=path, count=len(response["results"]))
+                    return response["results"]
+                if "notes" in response:
+                    logger.info("Notes fetched successfully", endpoint=path, count=len(response["notes"]))
+                    return response["notes"]
+                # Single note or empty dict
+                if response:
+                    logger.info("Notes fetched successfully", endpoint=path, count=1)
+                    return [response]
+            logger.debug("Endpoint returned non-note data", endpoint=path, type=type(response).__name__)
+        except OWUIError as e:
+            logger.debug("Endpoint failed", endpoint=path, error=str(e))
+            continue
+        except Exception as e:
+            logger.debug("Endpoint error", endpoint=path, error=str(e))
+            continue
+
+    logger.error("Failed to fetch notes from any known endpoint", endpoints=endpoints)
+    raise OWUIError(
+        "Failed to fetch notes from any known endpoint. "
+        "Open-WebUI's notes API may not be publicly accessible. "
+        "Consider exporting notes manually or using the /notes-sync/debug endpoint to troubleshoot."
+    )
 
 
 async def _build_manifest(notes: list) -> list:
@@ -232,7 +265,7 @@ async def owui_health() -> dict:
         return {"status": "error", "message": "Open-WebUI is not configured"}
 
     try:
-        await _owui_request("GET", "/notes", params={"count": 1})
+        response = await _owui_request("GET", "/notes", params={"count": 1})
         return {
             "status": "ok",
             "instance": settings.OWUI_INSTANCE_URL,
@@ -240,3 +273,49 @@ async def owui_health() -> dict:
         }
     except OWUIError as e:
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/debug", summary="Debug notes API endpoints", operation_id="NotesSyncDebug")
+async def debug_endpoints() -> dict:
+    """
+    Test all known notes API endpoints and return their raw responses.
+
+    Use this to diagnose why notes aren't being fetched. Shows status codes,
+    response types, and first 500 chars of each response.
+    """
+    if not settings.is_owui_configured():
+        return {"status": "error", "message": "Open-WebUI is not configured"}
+
+    endpoints = [
+        "/api/v1/notes",
+        "/api/notes",
+        "/api/v1/workspace/notes",
+        "/notes",
+        "/api/v1/notes/search",
+    ]
+
+    results = []
+    for path in endpoints:
+        try:
+            url = f"{settings.owui_api_url}{path}"
+            headers = settings.owui_headers
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.request("GET", url, headers=headers)
+                results.append({
+                    "endpoint": path,
+                    "status_code": response.status_code,
+                    "content_type": response.headers.get("content-type", "unknown"),
+                    "body_preview": response.text[:500],
+                    "body_length": len(response.text),
+                })
+        except Exception as e:
+            results.append({
+                "endpoint": path,
+                "error": str(e),
+            })
+
+    return {
+        "owui_url": settings.OWUI_INSTANCE_URL,
+        "endpoints_tested": len(results),
+        "results": results,
+    }
