@@ -60,6 +60,7 @@ class Settings:
         return {
             "Authorization": f"Bearer {self.OWUI_TOKEN}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
     def is_gitea_configured(self) -> bool:
