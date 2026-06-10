@@ -5,9 +5,10 @@ pull requests, and commenting via the Gitea REST API.
 """
 
 import base64
+from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -154,7 +155,13 @@ async def create_file(file: FileCreate) -> dict:
     Creates a new file or updates an existing one with the provided content.
     For updates, the existing file's SHA is fetched first to satisfy the API requirement.
     """
-    # ... logging ...
+    logger.info(
+        "Creating/updating file",
+        owner=file.owner,
+        repo=file.repo,
+        path=file.path,
+        branch=file.branch or "default",
+    )
 
     encoded_content = base64.b64encode(file.content.encode()).decode()
     payload = {"content": encoded_content, "message": file.message}
@@ -162,7 +169,7 @@ async def create_file(file: FileCreate) -> dict:
     if file.branch:
         payload["branch"] = file.branch
 
-    # NEW: Check if the file already exists — if so, we need its SHA for the update
+    # Check if the file already exists — if so, we need its SHA for the update
     ref = file.branch if file.branch else None
     try:
         existing = await _gitea_request(
@@ -171,17 +178,39 @@ async def create_file(file: FileCreate) -> dict:
             params={"ref": ref} if ref else {},
         )
         payload["sha"] = existing["sha"]
+        logger.info(
+            "File exists, including SHA for update",
+            owner=file.owner,
+            repo=file.repo,
+            path=file.path,
+            sha=payload["sha"][:12],
+        )
     except GiteaError as e:
         if e.status_code == 404:
-            pass  # File doesn't exist, no SHA needed for creation
+            logger.info(
+                "File does not exist, creating new",
+                owner=file.owner,
+                repo=file.repo,
+                path=file.path,
+            )
         else:
-            logger.warning("Unexpected error checking for existing file", error=str(e))
+            logger.warning(
+                "Unexpected error checking for existing file",
+                owner=file.owner,
+                repo=file.repo,
+                path=file.path,
+                error=str(e),
+            )
+            # Proceed without SHA — will succeed if file doesn't exist,
+            # fail with 422 if it does (and the error will be clear)
 
     result = await _gitea_request(
         "PUT",
         f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
         json=payload,
     )
+
+    logger.info("File written", owner=file.owner, repo=file.repo, path=file.path)
     return result
 
 
@@ -196,6 +225,7 @@ async def get_file(
     Get the contents of a file from a repository.
 
     Returns the decoded file content as a string.
+    If the path is a directory, returns a formatted listing of its contents.
     """
     params = {"ref": branch} if branch else {}
 
@@ -205,7 +235,23 @@ async def get_file(
         params=params,
     )
 
-    # Decode the base64 content
+    # Handle directory listing (API returns a list for directories)
+    if isinstance(response, list):
+        logger.info(
+            "Path is a directory, returning listing",
+            owner=owner,
+            repo=repo,
+            path=path,
+            entries=len(response),
+        )
+        lines = [f"Directory listing for `{path}` ({len(response)} entries):\n"]
+        for entry in response:
+            name = entry.get("name", "unknown")
+            entry_type = "📁" if entry.get("type") == "dir" else "📄"
+            lines.append(f"  {entry_type} {name}")
+        return "\n".join(lines)
+
+    # Decode the base64 content (single file)
     content = response.get("content", "")
     encoding = response.get("encoding", "base64")
 
