@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  companion-server:
+    build: .
+    container_name: openwebui-companion
+    ports:
+      - "8090:8090"
+    volumes:
+      # Persist evidence data
+      - evidence-data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  evidence-data:

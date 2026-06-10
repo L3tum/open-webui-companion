@@ -1,0 +1,45 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types:
+      - published
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check app/
+
+      - name: Validate syntax
+        run: python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('app/*.py')]"
+
+  publish:
+    needs: [test]
+    if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
+    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@main
+    runs-on: ubuntu-latest
+    secrets:
+      PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
