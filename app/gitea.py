@@ -5,10 +5,9 @@ pull requests, and commenting via the Gitea REST API.
 """
 
 import base64
-from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from app.config import settings

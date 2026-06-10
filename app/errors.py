@@ -3,7 +3,6 @@
 Provides consistent error responses and structured error logging.
 """
 
-import traceback
 from typing import Any
 
 import httpx
