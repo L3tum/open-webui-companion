@@ -152,7 +152,7 @@ async def create_file(file: FileCreate) -> dict:
     Create or update a file in a repository.
 
     Creates a new file or updates an existing one with the provided content.
-    For updates, the existing file's SHA is fetched first to satisfy the API requirement.
+    Handles Forgejo's stricter requirement for SHA on all file operations.
     """
     logger.info(
         "Creating/updating file",
@@ -165,49 +165,80 @@ async def create_file(file: FileCreate) -> dict:
     encoded_content = base64.b64encode(file.content.encode()).decode()
     payload = {"content": encoded_content, "message": file.message}
 
-    if file.branch:
-        payload["branch"] = file.branch
+    # Ensure branch is always set — fetch repo default if not provided
+    branch = file.branch
+    if not branch:
+        try:
+            repo_info = await _gitea_request(
+                "GET",
+                f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}",
+            )
+            branch = repo_info.get("default_branch", "main")
+            logger.info(
+                "Using repo default branch",
+                owner=file.owner,
+                repo=file.repo,
+                branch=branch,
+            )
+        except GiteaError:
+            branch = "main"  # fallback
+    payload["branch"] = branch
 
-    # Check if the file already exists — if so, we need its SHA for the update
-    ref = file.branch if file.branch else None
+    # Try PUT first — if the server demands SHA, fetch the file and retry
     try:
-        existing = await _gitea_request(
-            "GET",
+        result = await _gitea_request(
+            "PUT",
             f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
-            params={"ref": ref} if ref else {},
-        )
-        payload["sha"] = existing["sha"]
-        logger.info(
-            "File exists, including SHA for update",
-            owner=file.owner,
-            repo=file.repo,
-            path=file.path,
-            sha=payload["sha"][:12],
+            json=payload,
         )
     except GiteaError as e:
-        if e.status_code == 404:
+        if e.status_code == 422 and "SHA" in str(e):
+            # Server requires SHA — fetch the existing file
             logger.info(
-                "File does not exist, creating new",
+                "Server requires SHA, fetching existing file",
                 owner=file.owner,
                 repo=file.repo,
                 path=file.path,
             )
+            try:
+                existing = await _gitea_request(
+                    "GET",
+                    f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
+                    params={"ref": branch},
+                )
+                payload["sha"] = existing["sha"]
+                logger.info(
+                    "Retrying with SHA",
+                    owner=file.owner,
+                    repo=file.repo,
+                    path=file.path,
+                    sha=payload["sha"][:12],
+                )
+                result = await _gitea_request(
+                    "PUT",
+                    f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
+                    json=payload,
+                )
+            except GiteaError as inner:
+                if inner.status_code == 404:
+                    # File truly doesn't exist but server still wants SHA
+                    # This is a Forgejo quirk — include the branch's tree SHA
+                    logger.warning(
+                        "File does not exist but server requires SHA (Forgejo quirk)",
+                        owner=file.owner,
+                        repo=file.repo,
+                        path=file.path,
+                    )
+                    # Get the repo's git tree for the branch to find parent dir SHA
+                    raise GiteaError(
+                        f"Cannot create file: server requires SHA but file does not exist. "
+                        f"This may indicate a permissions issue or the repository is empty. "
+                        f"Path: {file.path}, Branch: {branch}",
+                        status_code=422,
+                    ) from inner
+                raise
         else:
-            logger.warning(
-                "Unexpected error checking for existing file",
-                owner=file.owner,
-                repo=file.repo,
-                path=file.path,
-                error=str(e),
-            )
-            # Proceed without SHA — will succeed if file doesn't exist,
-            # fail with 422 if it does (and the error will be clear)
-
-    result = await _gitea_request(
-        "PUT",
-        f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
-        json=payload,
-    )
+            raise
 
     logger.info("File written", owner=file.owner, repo=file.repo, path=file.path)
     return result
