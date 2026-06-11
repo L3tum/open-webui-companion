@@ -61,6 +61,15 @@ class PRCreate(BaseModel):
     draft: bool = Field(default=False, description="Create as draft PR")
 
 
+class FileListResponse(BaseModel):
+    """Schema for a single file/directory entry in a listing."""
+    name: str = Field(..., description="Entry name")
+    path: str = Field(..., description="Full path within the repo")
+    type: str = Field(..., description="Entry type: file or dir")
+    size: int = Field(default=0, description="Size in bytes (files only)")
+    download_url: str = Field(default="", description="Direct download URL (files only)")
+
+
 class CommentCreate(BaseModel):
     """Schema for creating a comment on an issue or PR."""
 
@@ -151,8 +160,7 @@ async def create_file(file: FileCreate) -> dict:
     """
     Create or update a file in a repository.
 
-    Creates a new file or updates an existing one with the provided content.
-    Handles Forgejo's stricter requirement for SHA on all file operations.
+    Creates a new file (POST) or updates an existing one (PUT with SHA).
     """
     logger.info(
         "Creating/updating file",
@@ -162,10 +170,7 @@ async def create_file(file: FileCreate) -> dict:
         branch=file.branch or "default",
     )
 
-    encoded_content = base64.b64encode(file.content.encode()).decode()
-    payload = {"content": encoded_content, "message": file.message}
-
-    # Ensure branch is always set — fetch repo default if not provided
+    # Determine branch — fetch repo default if not provided
     branch = file.branch
     if not branch:
         try:
@@ -182,63 +187,55 @@ async def create_file(file: FileCreate) -> dict:
             )
         except GiteaError:
             branch = "main"  # fallback
-    payload["branch"] = branch
 
-    # Try PUT first — if the server demands SHA, fetch the file and retry
+    # Check if file exists
+    file_exists = False
+    file_sha = None
     try:
-        result = await _gitea_request(
-            "PUT",
+        existing = await _gitea_request(
+            "GET",
             f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
-            json=payload,
+            params={"ref": branch},
         )
+        file_exists = True
+        file_sha = existing["sha"]
     except GiteaError as e:
-        if e.status_code == 422 and "SHA" in str(e):
-            # Server requires SHA — fetch the existing file
-            logger.info(
-                "Server requires SHA, fetching existing file",
-                owner=file.owner,
-                repo=file.repo,
-                path=file.path,
-            )
-            try:
-                existing = await _gitea_request(
-                    "GET",
-                    f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
-                    params={"ref": branch},
-                )
-                payload["sha"] = existing["sha"]
-                logger.info(
-                    "Retrying with SHA",
-                    owner=file.owner,
-                    repo=file.repo,
-                    path=file.path,
-                    sha=payload["sha"][:12],
-                )
-                result = await _gitea_request(
-                    "PUT",
-                    f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
-                    json=payload,
-                )
-            except GiteaError as inner:
-                if inner.status_code == 404:
-                    # File truly doesn't exist but server still wants SHA
-                    # This is a Forgejo quirk — include the branch's tree SHA
-                    logger.warning(
-                        "File does not exist but server requires SHA (Forgejo quirk)",
-                        owner=file.owner,
-                        repo=file.repo,
-                        path=file.path,
-                    )
-                    # Get the repo's git tree for the branch to find parent dir SHA
-                    raise GiteaError(
-                        f"Cannot create file: server requires SHA but file does not exist. "
-                        f"This may indicate a permissions issue or the repository is empty. "
-                        f"Path: {file.path}, Branch: {branch}",
-                        status_code=422,
-                    ) from inner
-                raise
-        else:
+        if e.status_code != 404:
             raise
+
+    encoded_content = base64.b64encode(file.content.encode()).decode()
+    payload = {
+        "content": encoded_content,
+        "message": file.message,
+        "branch": branch,
+    }
+
+    if file_exists:
+        # Update existing file — PUT with SHA
+        payload["sha"] = file_sha
+        method = "PUT"
+        logger.info(
+            "Updating existing file",
+            owner=file.owner,
+            repo=file.repo,
+            path=file.path,
+            sha=file_sha[:12],
+        )
+    else:
+        # Create new file — POST without SHA
+        method = "POST"
+        logger.info(
+            "Creating new file",
+            owner=file.owner,
+            repo=file.repo,
+            path=file.path,
+        )
+
+    result = await _gitea_request(
+        method,
+        f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
+        json=payload,
+    )
 
     logger.info("File written", owner=file.owner, repo=file.repo, path=file.path)
     return result
@@ -288,6 +285,44 @@ async def get_file(
     if encoding == "base64":
         return base64.b64decode(content).decode("utf-8")
     return content
+
+
+@router.get("/files/{owner}/{repo}/{path:path}/ls", summary="List files in directory", operation_id="GiteaListFiles")
+async def list_files(
+    owner: str,
+    repo: str,
+    path: str = "",
+    branch: str = Query(default="", description="Branch name"),
+    filter: str = Query(default="", description="Glob pattern to filter by (e.g. '*.py', 'README*')"),
+) -> list[FileListResponse]:
+    """
+    List files and directories at the given path.
+
+    Supports an optional glob filter to narrow results.
+    """
+    params = {"ref": branch} if branch else {}
+
+    entries = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/contents/{path}",
+        params=params,
+    )
+
+    # Apply filter if provided
+    if filter:
+        import fnmatch
+        entries = [e for e in entries if fnmatch.fnmatch(e.get("name", ""), filter)]
+
+    return [
+        FileListResponse(
+            name=e.get("name", ""),
+            path=e.get("path", ""),
+            type=e.get("type", "file"),
+            size=e.get("size", 0),
+            download_url=e.get("download_url", ""),
+        )
+        for e in entries
+    ]
 
 
 @router.post("/issues", summary="Create an issue", operation_id="GiteaCreateIssue")
