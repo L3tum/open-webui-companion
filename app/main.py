@@ -72,6 +72,8 @@ A companion server for Open-WebUI that provides persistent tools for:
 - **GiteaListPRs**: List pull requests
 - **GiteaPostComment**: Post a comment on an issue or PR
 - **GiteaListComments**: List comments on an issue or PR
+- **GiteaGetPRPipeline**: Get pipeline status for a PR (check if CI passed)
+- **GiteaGetPipelineOutput**: Get full pipeline logs for a workflow run
 - **GiteaHealth**: Check Gitea connection
 
 ## Notes Sync
@@ -86,6 +88,8 @@ Add this to your Open-WebUI model's system prompt:
 > - Before answering factual questions, check EvidenceList for stored evidence.
 > - When the user provides facts or sources, use EvidenceAdd to store them.
 > - Use Gitea tools to create repos, edit files, create PRs, and comment on issues/PRs.
+> - After creating or modifying a PR, use GiteaGetPRPipeline to check if CI passed.
+> - If a pipeline fails, use GiteaGetPipelineOutput to fetch the logs and diagnose the issue.
 > - Always confirm with the user before making changes on Gitea.
 > - Use NotesSyncTrigger to sync your notes into RAG when needed.
     """,
