@@ -472,3 +472,238 @@ async def gitea_health() -> dict:
         }
     except GiteaError as e:
         return {"status": "error", "message": str(e)}
+
+
+# ─── Pipeline / Actions endpoints ───────────────────────────────────────────
+
+
+class PipelineStatusResponse(BaseModel):
+    """Schema for pipeline status response."""
+
+    run_id: int = Field(..., description="Workflow run ID")
+    status: str = Field(..., description="Run status: success, failure, running, waiting, cancelled, skipped")
+    conclusion: str = Field(default="", description="Run conclusion: success, failure, neutral, cancelled, timed_out, or empty if still running")
+    name: str = Field(default="", description="Workflow name")
+    display_title: str = Field(default="", description="Human-readable title for the run")
+    event: str = Field(default="", description="Trigger event: push, pull_request, schedule, etc.")
+    branch: str = Field(default="", description="Branch the run was triggered on")
+    commit_sha: str = Field(default="", description="Commit SHA")
+    html_url: str = Field(default="", description="URL to view the run in the web UI")
+    started_at: str = Field(default="", description="ISO 8601 timestamp when the run started")
+    updated_at: str = Field(default="", description="ISO 8601 timestamp of last update")
+
+
+class PipelineJob(BaseModel):
+    """Schema for a single job in a pipeline run."""
+
+    job_id: int = Field(..., description="Job ID")
+    name: str = Field(default="", description="Job name")
+    status: str = Field(default="", description="Job status")
+    conclusion: str = Field(default="", description="Job conclusion")
+    started_at: str = Field(default="", description="ISO 8601 timestamp when the job started")
+
+
+class PipelineOutputResponse(BaseModel):
+    """Schema for pipeline output/logs response."""
+
+    run_id: int = Field(..., description="Workflow run ID")
+    status: str = Field(..., description="Run status")
+    conclusion: str = Field(default="", description="Run conclusion")
+    name: str = Field(default="", description="Workflow name")
+    jobs: list[PipelineJob] = Field(default_factory=list, description="List of jobs in this run")
+    logs: str = Field(default="", description="Combined log output from all jobs")
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/pipeline",
+    summary="Get pipeline status for a PR",
+    operation_id="GiteaGetPRPipeline",
+)
+async def get_pr_pipeline(
+    owner: str,
+    repo: str,
+    index: int,
+) -> PipelineStatusResponse:
+    """
+    Get the latest pipeline (workflow run) status for a pull request.
+
+    Fetches the most recent workflow run triggered by this PR and returns
+    its status. An agent can use this after getting PR details to check
+    whether CI has passed.
+
+    Returns the latest run's status, which can be:
+    - `success`: Pipeline passed
+    - `failure`: Pipeline failed
+    - `running`: Pipeline is still in progress
+    - `waiting`: Pipeline is waiting for a runner
+    - `cancelled`: Pipeline was cancelled
+    - `skipped`: Pipeline was skipped
+    """
+    logger.info("Getting PR pipeline status", owner=owner, repo=repo, pr_index=index)
+
+    # Get PR details to find the head branch
+    pr_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}",
+    )
+
+    head_branch = pr_data.get("head", {}).get("ref", "")
+    if not head_branch:
+        raise GiteaError(f"Could not determine head branch for PR #{index}", status_code=404)
+
+    logger.info("Looking up pipeline for branch", branch=head_branch)
+
+    # List workflow runs, filtered by the PR's head branch and pull_request event
+    runs_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs",
+        params={
+            "branch": head_branch,
+            "event": "pull_request",
+            "per_page": 1,
+        },
+    )
+
+    # The API returns {"workflow_runs": [...], "total_count": N}
+    runs = runs_data if isinstance(runs_data, list) else runs_data.get("workflow_runs", [])
+
+    if not runs:
+        return PipelineStatusResponse(
+            run_id=0,
+            status="pending",
+            conclusion="",
+            name="",
+            display_title=f"No pipeline runs found for PR #{index}",
+            event="",
+            branch=head_branch,
+            commit_sha="",
+            html_url="",
+            started_at="",
+            updated_at="",
+        )
+
+    run = runs[0]
+
+    return PipelineStatusResponse(
+        run_id=run.get("id", 0),
+        status=run.get("status", "unknown"),
+        conclusion=run.get("conclusion", ""),
+        name=run.get("name", ""),
+        display_title=run.get("display_title", ""),
+        event=run.get("event", ""),
+        branch=run.get("head_branch", head_branch),
+        commit_sha=run.get("head_sha", ""),
+        html_url=run.get("html_url", ""),
+        started_at=run.get("started_at", ""),
+        updated_at=run.get("updated_at", ""),
+    )
+
+
+@router.get(
+    "/actions/runs/{owner}/{repo}/{run_id}/logs",
+    summary="Get pipeline output/logs",
+    operation_id="GiteaGetPipelineOutput",
+)
+async def get_pipeline_output(
+    owner: str,
+    repo: str,
+    run_id: int,
+) -> PipelineOutputResponse:
+    """
+    Get the full pipeline output and logs for a workflow run.
+
+    Fetches all jobs in the specified workflow run and retrieves their logs.
+    This is useful for debugging pipeline failures — after checking the status
+    with GiteaGetPRPipeline, you can fetch the detailed output.
+
+    Returns combined logs from all jobs, along with job-level status information.
+    """
+    logger.info("Getting pipeline output", owner=owner, repo=repo, run_id=run_id)
+
+    # Get run details
+    run_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}",
+    )
+
+    # List jobs for this run
+    jobs_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+    )
+
+    jobs_list = jobs_data if isinstance(jobs_data, list) else jobs_data.get("workflow_jobs", [])
+
+    # Build job summaries
+    jobs = [
+        PipelineJob(
+            job_id=job.get("id", 0),
+            name=job.get("name", ""),
+            status=job.get("status", ""),
+            conclusion=job.get("conclusion", ""),
+            started_at=job.get("started_at", ""),
+        )
+        for job in jobs_list
+    ]
+
+    # Fetch logs for each job
+    log_sections = []
+    for job in jobs_list:
+        job_id = job.get("id", 0)
+        job_name = job.get("name", f"job-{job_id}")
+        log_sections.append(f"\n{'='*60}")
+        log_sections.append(f"Job: {job_name} (ID: {job_id})")
+        log_sections.append(f"Status: {job.get('status', 'unknown')}")
+        log_sections.append(f"Conclusion: {job.get('conclusion', 'N/A')}")
+        log_sections.append(f"{'='*60}\n")
+
+        try:
+            # Fetch job logs
+            log_response = await _gitea_request(
+                "GET",
+                f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/logs",
+            )
+            # The logs endpoint may return text directly or a URL
+            if isinstance(log_response, str):
+                log_sections.append(log_response)
+            elif isinstance(log_response, dict):
+                log_url = log_response.get("url", "")
+                if log_url:
+                    log_sections.append(f"Logs URL: {log_url}")
+                    # Try to fetch the actual log content
+                    try:
+                        settings.require_gitea_config()
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            log_content = await client.get(
+                                log_url,
+                                headers=settings.gitea_headers,
+                            )
+                            log_content.raise_for_status()
+                            log_sections.append(log_content.text[:50000])  # Limit log size
+                    except Exception as e:
+                        log_sections.append(f"[Could not fetch logs: {e}]")
+                else:
+                    log_sections.append(str(log_response))
+            else:
+                log_sections.append(str(log_response))
+        except GiteaError as e:
+            log_sections.append(f"[Failed to fetch logs for job {job_id}: {e}]")
+            logger.warning(
+                "Failed to fetch job logs",
+                owner=owner,
+                repo=repo,
+                run_id=run_id,
+                job_id=job_id,
+                error=str(e),
+            )
+
+    combined_logs = "\n".join(log_sections)
+
+    return PipelineOutputResponse(
+        run_id=run_data.get("id", run_id),
+        status=run_data.get("status", "unknown"),
+        conclusion=run_data.get("conclusion", ""),
+        name=run_data.get("name", ""),
+        jobs=jobs,
+        logs=combined_logs,
+    )
