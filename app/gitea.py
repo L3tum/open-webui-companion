@@ -580,14 +580,15 @@ async def get_pr_pipeline(
 
     logger.info("Looking up pipeline for branch", branch=head_branch)
 
-    # List workflow runs, filtered by the PR's head branch and pull_request event
+    # List workflow runs, filtered by the PR's head branch and pull_request event.
+    # Note: Gitea/Forgejo returns runs sorted by ID ascending (oldest first) by default.
+    # We fetch all matching runs and select the latest one (highest ID).
     runs_data = await _gitea_request(
         "GET",
         f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs",
         params={
             "branch": head_branch,
             "event": "pull_request",
-            "per_page": 1,
         },
     )
 
@@ -610,7 +611,8 @@ async def get_pr_pipeline(
             updated_at="",
         )
 
-    run = runs[0]
+    # Select the most recent run (highest ID), since the API returns ascending order
+    run = max(runs, key=lambda r: r.get("id", 0))
 
     # Map fields — Gitea/Forgejo Actions API uses slightly different field names
     # than GitHub Actions. Handle both conventions.
