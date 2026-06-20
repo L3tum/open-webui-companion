@@ -246,8 +246,18 @@ async def create_file(file: FileCreate) -> dict:
             f"{settings.gitea_api_url}/repos/{file.owner}/{file.repo}/contents/{file.path}",
             params={"ref": branch},
         )
-        file_exists = True
-        file_sha = existing["sha"]
+        # Handle directory response (API returns a list for directories)
+        if isinstance(existing, list):
+            logger.info(
+                "Path is a directory, treating file as new",
+                owner=file.owner,
+                repo=file.repo,
+                path=file.path,
+            )
+            file_exists = False
+        else:
+            file_exists = True
+            file_sha = existing["sha"]
     except GiteaError as e:
         if e.status_code != 404:
             raise
