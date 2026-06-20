@@ -8,7 +8,7 @@ import base64
 import fnmatch
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -542,6 +542,38 @@ async def gitea_health() -> dict:
         }
     except GiteaError as e:
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/token", summary="Get Gitea API token", operation_id="GiteaGetToken")
+async def get_token() -> dict:
+    """
+    Get the configured Gitea API token.
+
+    This endpoint is **disabled by default** for security reasons.
+    Enable it by setting the `EXPOSE_GITEA_TOKEN=true` environment variable.
+
+    Primarily useful for agents that need the token to perform
+    git operations (e.g., cloning repos, committing changes).
+
+    Returns 403 if the endpoint is not explicitly enabled.
+    """
+    if not settings.is_gitea_configured():
+        raise HTTPException(
+            status_code=403,
+            detail="Gitea is not configured. Set GITEA_TOKEN and GITEA_INSTANCE_URL environment variables.",
+        )
+
+    if not settings.EXPOSE_GITEA_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail="Token endpoint is disabled. Set EXPOSE_GITEA_TOKEN=true to enable it.",
+        )
+
+    logger.info("Gitea token retrieved via API")
+    return {
+        "token": settings.GITEA_TOKEN,
+        "instance": settings.GITEA_INSTANCE_URL,
+    }
 
 
 # ─── Pipeline / Actions endpoints ───────────────────────────────────────────
