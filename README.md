@@ -1,5 +1,10 @@
 # Open-WebUI Companion Server
 
+## NOTICE
+
+I had some bigger goals with this but decided to switch away and build something else. As such the functionality here is basically the same as Forgejo-MCP or Gitea-MCP projects.
+
+
 A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management and Gitea integration.
 
 ## Features
