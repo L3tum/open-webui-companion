@@ -62,6 +62,20 @@ class PRCreate(BaseModel):
     draft: bool = Field(default=False, description="Create as draft PR")
 
 
+class IssueUpdate(BaseModel):
+    """Schema for updating an issue."""
+
+    title: str | None = Field(default=None, description="New issue title")
+    body: str | None = Field(default=None, description="New issue description")
+
+
+class PRUpdate(BaseModel):
+    """Schema for updating a pull request."""
+
+    title: str | None = Field(default=None, description="New PR title")
+    body: str | None = Field(default=None, description="New PR description")
+
+
 class FileListResponse(BaseModel):
     """Schema for a single file/directory entry in a listing."""
     name: str = Field(..., description="Entry name")
@@ -421,6 +435,32 @@ async def list_issues(
     )
 
 
+@router.patch("/issues/{owner}/{repo}/{index}", summary="Update an issue", operation_id="GiteaUpdateIssue")
+async def update_issue(owner: str, repo: str, index: int, update: IssueUpdate) -> dict:
+    """
+    Update an issue's title and/or description.
+
+    Only the fields provided in the request body will be updated.
+    Omitted fields remain unchanged.
+    """
+    logger.info("Updating issue", owner=owner, repo=repo, index=index)
+
+    payload = {}
+    if update.title is not None:
+        payload["title"] = update.title
+    if update.body is not None:
+        payload["body"] = update.body
+
+    result = await _gitea_request(
+        "PATCH",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/issues/{index}",
+        json=payload,
+    )
+
+    logger.info("Issue updated", owner=owner, repo=repo, index=index)
+    return result
+
+
 # ─── Pull request endpoints ─────────────────────────────────────────────────
 
 
@@ -476,6 +516,32 @@ async def list_prs(
         f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls",
         params={"state": state, "page": page, "limit": limit},
     )
+
+
+@router.patch("/pulls/{owner}/{repo}/{index}", summary="Update a pull request", operation_id="GiteaUpdatePR")
+async def update_pr(owner: str, repo: str, index: int, update: PRUpdate) -> dict:
+    """
+    Update a pull request's title and/or description.
+
+    Only the fields provided in the request body will be updated.
+    Omitted fields remain unchanged.
+    """
+    logger.info("Updating PR", owner=owner, repo=repo, index=index)
+
+    payload = {}
+    if update.title is not None:
+        payload["title"] = update.title
+    if update.body is not None:
+        payload["body"] = update.body
+
+    result = await _gitea_request(
+        "PATCH",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}",
+        json=payload,
+    )
+
+    logger.info("PR updated", owner=owner, repo=repo, index=index)
+    return result
 
 
 # ─── Comment endpoints ──────────────────────────────────────────────────────
