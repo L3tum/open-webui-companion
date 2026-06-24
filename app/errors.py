@@ -54,7 +54,9 @@ def add_error_handlers(app: FastAPI) -> None:
     """Register global exception handlers with the FastAPI app."""
 
     @app.exception_handler(HTTPException)
-    async def handle_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+    async def handle_http_exception(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
         """Handle FastAPI HTTPExceptions with consistent formatting."""
         logger.warning(
             "HTTP error",
@@ -94,7 +96,9 @@ def add_error_handlers(app: FastAPI) -> None:
         return _error_response(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @app.exception_handler(httpx.HTTPStatusError)
-    async def handle_httpx_error(request: Request, exc: httpx.HTTPStatusError) -> JSONResponse:
+    async def handle_httpx_error(
+        request: Request, exc: httpx.HTTPStatusError
+    ) -> JSONResponse:
         """Handle HTTP client errors from external APIs."""
         logger.error(
             "External API error",

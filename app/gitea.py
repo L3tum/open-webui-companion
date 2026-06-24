@@ -36,7 +36,9 @@ class FileCreate(BaseModel):
     repo: str = Field(..., description="Repository name")
     path: str = Field(..., description="File path within the repo")
     content: str = Field(..., description="File content")
-    message: str = Field(default="Add file via companion server", description="Commit message")
+    message: str = Field(
+        default="Add file via companion server", description="Commit message"
+    )
     branch: str = Field(default="", description="Branch name (uses default if empty)")
 
 
@@ -78,11 +80,14 @@ class PRUpdate(BaseModel):
 
 class FileListResponse(BaseModel):
     """Schema for a single file/directory entry in a listing."""
+
     name: str = Field(..., description="Entry name")
     path: str = Field(..., description="Full path within the repo")
     type: str = Field(..., description="Entry type: file or dir")
     size: int = Field(default=0, description="Size in bytes (files only)")
-    download_url: str = Field(default="", description="Direct download URL (files only)")
+    download_url: str = Field(
+        default="", description="Direct download URL (files only)"
+    )
 
 
 class CommentCreate(BaseModel):
@@ -94,6 +99,52 @@ class CommentCreate(BaseModel):
     body: str = Field(..., description="Comment text")
 
 
+class PRFileChange(BaseModel):
+    """Schema for a single file changed in a PR."""
+
+    filename: str = Field(..., description="File path")
+    status: str = Field(
+        ..., description="Change status: added, removed, modified, renamed"
+    )
+    additions: int = Field(default=0, description="Lines added")
+    deletions: int = Field(default=0, description="Lines deleted")
+    changes: int = Field(default=0, description="Total line changes")
+    binary: bool = Field(default=False, description="Is a binary file")
+    patch: str = Field(default="", description="Unified diff patch")
+
+
+class ReviewCreate(BaseModel):
+    """Schema for submitting a PR review."""
+
+    owner: str = Field(..., description="Repository owner")
+    repo: str = Field(..., description="Repository name")
+    body: str = Field(default="", description="Review comment text")
+    type: str = Field(
+        ..., description="Review type: approved, changes_requested, comment"
+    )
+    commit_id: str = Field(
+        default="", description="Commit ID to review (uses latest if empty)"
+    )
+
+
+class PRSummaryResponse(BaseModel):
+    """Schema for PR summary response."""
+
+    pr_number: int = Field(..., description="PR number")
+    title: str = Field(..., description="PR title")
+    state: str = Field(default="", description="PR state: open, closed, merged")
+    body: str = Field(default="", description="PR description/body")
+    files_changed: int = Field(default=0, description="Number of files changed")
+    total_additions: int = Field(default=0, description="Total lines added")
+    total_deletions: int = Field(default=0, description="Total lines deleted")
+    changed_files: list[str] = Field(
+        default_factory=list, description="List of changed file paths"
+    )
+    base_branch: str = Field(default="", description="Target base branch")
+    head_branch: str = Field(default="", description="Source head branch")
+    summary: str = Field(default="", description="Auto-generated summary of the PR")
+
+
 # ─── Pipeline / Actions models ──────────────────────────────────────────────
 
 
@@ -101,16 +152,30 @@ class PipelineStatusResponse(BaseModel):
     """Schema for pipeline status response."""
 
     run_id: int = Field(..., description="Workflow run ID")
-    run_number: int = Field(default=0, description="Run number within the workflow (index_in_repo)")
-    status: str = Field(..., description="Run status: success, failure, running, waiting, cancelled, skipped")
-    conclusion: str = Field(default="", description="Run conclusion: success, failure, neutral, cancelled, timed_out, or empty if still running")
+    run_number: int = Field(
+        default=0, description="Run number within the workflow (index_in_repo)"
+    )
+    status: str = Field(
+        ...,
+        description="Run status: success, failure, running, waiting, cancelled, skipped",
+    )
+    conclusion: str = Field(
+        default="",
+        description="Run conclusion: success, failure, neutral, cancelled, timed_out, or empty if still running",
+    )
     name: str = Field(default="", description="Workflow name")
-    display_title: str = Field(default="", description="Human-readable title for the run")
-    event: str = Field(default="", description="Trigger event: push, pull_request, schedule, etc.")
+    display_title: str = Field(
+        default="", description="Human-readable title for the run"
+    )
+    event: str = Field(
+        default="", description="Trigger event: push, pull_request, schedule, etc."
+    )
     branch: str = Field(default="", description="Branch the run was triggered on")
     commit_sha: str = Field(default="", description="Commit SHA")
     html_url: str = Field(default="", description="URL to view the run in the web UI")
-    started_at: str = Field(default="", description="ISO 8601 timestamp when the run started")
+    started_at: str = Field(
+        default="", description="ISO 8601 timestamp when the run started"
+    )
     updated_at: str = Field(default="", description="ISO 8601 timestamp of last update")
 
 
@@ -121,7 +186,9 @@ class PipelineJob(BaseModel):
     name: str = Field(default="", description="Job name")
     status: str = Field(default="", description="Job status")
     conclusion: str = Field(default="", description="Job conclusion")
-    started_at: str = Field(default="", description="ISO 8601 timestamp when the job started")
+    started_at: str = Field(
+        default="", description="ISO 8601 timestamp when the job started"
+    )
     url: str = Field(default="", description="URL to view the job in the web UI")
 
 
@@ -132,8 +199,13 @@ class PipelineOutputResponse(BaseModel):
     status: str = Field(..., description="Run status")
     conclusion: str = Field(default="", description="Run conclusion")
     name: str = Field(default="", description="Workflow name")
-    jobs: list[PipelineJob] = Field(default_factory=list, description="List of jobs in this run")
-    logs: str = Field(default="", description="Combined log output from all jobs, or note if logs are unavailable")
+    jobs: list[PipelineJob] = Field(
+        default_factory=list, description="List of jobs in this run"
+    )
+    logs: str = Field(
+        default="",
+        description="Combined log output from all jobs, or note if logs are unavailable",
+    )
 
 
 async def _gitea_request(method: str, url: str, **kwargs) -> dict:
@@ -161,14 +233,18 @@ async def _gitea_request(method: str, url: str, **kwargs) -> dict:
             status_code=e.response.status_code,
         ) from e
     except httpx.RequestError as e:
-        logger.error("Gitea API request error", method=method, url=str(url), error=str(e))
+        logger.error(
+            "Gitea API request error", method=method, url=str(url), error=str(e)
+        )
         raise GiteaError(f"Failed to connect to Gitea: {e}") from e
 
 
 # ─── Repository endpoints ───────────────────────────────────────────────────
 
 
-@router.post("/repos", summary="Create a new repository", operation_id="GiteaCreateRepo")
+@router.post(
+    "/repos", summary="Create a new repository", operation_id="GiteaCreateRepo"
+)
 async def create_repo(repo: RepoCreate) -> dict:
     """
     Create a new repository on Gitea.
@@ -206,7 +282,11 @@ async def list_repos(
     )
 
 
-@router.get("/repos/{owner}/{repo}", summary="Get repository details", operation_id="GiteaGetRepo")
+@router.get(
+    "/repos/{owner}/{repo}",
+    summary="Get repository details",
+    operation_id="GiteaGetRepo",
+)
 async def get_repo(owner: str, repo: str) -> dict:
     """Get details of a specific repository."""
     return await _gitea_request(
@@ -218,7 +298,9 @@ async def get_repo(owner: str, repo: str) -> dict:
 # ─── File endpoints ─────────────────────────────────────────────────────────
 
 
-@router.post("/files", summary="Create or update a file", operation_id="GiteaCreateFile")
+@router.post(
+    "/files", summary="Create or update a file", operation_id="GiteaCreateFile"
+)
 async def create_file(file: FileCreate) -> dict:
     """
     Create or update a file in a repository.
@@ -314,7 +396,11 @@ async def create_file(file: FileCreate) -> dict:
     return result
 
 
-@router.get("/files/{owner}/{repo}/{path:path}", summary="Get file contents", operation_id="GiteaGetFile")
+@router.get(
+    "/files/{owner}/{repo}/{path:path}",
+    summary="Get file contents",
+    operation_id="GiteaGetFile",
+)
 async def get_file(
     owner: str,
     repo: str,
@@ -360,13 +446,19 @@ async def get_file(
     return content
 
 
-@router.get("/files/{owner}/{repo}/{path:path}/ls", summary="List files in directory", operation_id="GiteaListFiles")
+@router.get(
+    "/files/{owner}/{repo}/{path:path}/ls",
+    summary="List files in directory",
+    operation_id="GiteaListFiles",
+)
 async def list_files(
     owner: str,
     repo: str,
     path: str = "",
     branch: str = Query(default="", description="Branch name"),
-    filter: str = Query(default="", description="Glob pattern to filter by (e.g. '*.py', 'README*')"),
+    filter: str = Query(
+        default="", description="Glob pattern to filter by (e.g. '*.py', 'README*')"
+    ),
 ) -> list[FileListResponse]:
     """
     List files and directories at the given path.
@@ -415,11 +507,15 @@ async def create_issue(issue: IssueCreate) -> dict:
         },
     )
 
-    logger.info("Issue created", owner=issue.owner, repo=issue.repo, index=result.get("number"))
+    logger.info(
+        "Issue created", owner=issue.owner, repo=issue.repo, index=result.get("number")
+    )
     return result
 
 
-@router.get("/issues/{owner}/{repo}", summary="List issues", operation_id="GiteaListIssues")
+@router.get(
+    "/issues/{owner}/{repo}", summary="List issues", operation_id="GiteaListIssues"
+)
 async def list_issues(
     owner: str,
     repo: str,
@@ -435,7 +531,11 @@ async def list_issues(
     )
 
 
-@router.patch("/issues/{owner}/{repo}/{index}", summary="Update an issue", operation_id="GiteaUpdateIssue")
+@router.patch(
+    "/issues/{owner}/{repo}/{index}",
+    summary="Update an issue",
+    operation_id="GiteaUpdateIssue",
+)
 async def update_issue(owner: str, repo: str, index: int, update: IssueUpdate) -> dict:
     """
     Update an issue's title and/or description.
@@ -502,7 +602,9 @@ async def create_pr(pr: PRCreate) -> dict:
     return result
 
 
-@router.get("/pulls/{owner}/{repo}", summary="List pull requests", operation_id="GiteaListPRs")
+@router.get(
+    "/pulls/{owner}/{repo}", summary="List pull requests", operation_id="GiteaListPRs"
+)
 async def list_prs(
     owner: str,
     repo: str,
@@ -518,7 +620,11 @@ async def list_prs(
     )
 
 
-@router.patch("/pulls/{owner}/{repo}/{index}", summary="Update a pull request", operation_id="GiteaUpdatePR")
+@router.patch(
+    "/pulls/{owner}/{repo}/{index}",
+    summary="Update a pull request",
+    operation_id="GiteaUpdatePR",
+)
 async def update_pr(owner: str, repo: str, index: int, update: PRUpdate) -> dict:
     """
     Update a pull request's title and/or description.
@@ -552,7 +658,9 @@ async def update_pr(owner: str, repo: str, index: int, update: PRUpdate) -> dict
     summary="Post a comment on an issue or PR",
     operation_id="GiteaPostComment",
 )
-async def post_comment(owner: str, repo: str, index: int, comment: CommentCreate) -> dict:
+async def post_comment(
+    owner: str, repo: str, index: int, comment: CommentCreate
+) -> dict:
     """
     Post a comment on an issue or pull request.
 
@@ -587,6 +695,247 @@ async def list_comments(
         "GET",
         f"{settings.gitea_api_url}/repos/{owner}/{repo}/issues/{index}/comments",
         params={"page": page, "limit": limit},
+    )
+
+
+# ─── PR detail endpoints ────────────────────────────────────────────────────
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/diff",
+    summary="Get PR diff",
+    operation_id="GiteaGetPRDiff",
+)
+async def get_pr_diff(
+    owner: str,
+    repo: str,
+    index: int,
+    style: str = Query(
+        default="unified", description="Diff style: unified, separate, or full"
+    ),
+) -> str:
+    """
+    Get the full unified diff for a pull request.
+
+    Returns the raw diff text showing all changes in the PR.
+    """
+    logger.info("Getting PR diff", owner=owner, repo=repo, pr_index=index)
+
+    response = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/diff",
+        params={"style": style},
+    )
+
+    # The diff endpoint returns text, not JSON — handle raw response
+    if isinstance(response, str):
+        return response
+    # If it came back as a dict (some Gitea versions), try to extract
+    if isinstance(response, dict):
+        return response.get("content", response.get("diff", str(response)))
+    return str(response)
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/files",
+    summary="Get PR changed files",
+    operation_id="GiteaGetPRFiles",
+)
+async def get_pr_files(
+    owner: str,
+    repo: str,
+    index: int,
+) -> list[PRFileChange]:
+    """
+    Get the list of files changed in a pull request.
+
+    Returns file-level change summaries (additions, deletions, status).
+    """
+    logger.info("Getting PR files", owner=owner, repo=repo, pr_index=index)
+
+    files_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/files",
+    )
+
+    return [
+        PRFileChange(
+            filename=f.get("filename", ""),
+            status=f.get("status", ""),
+            additions=f.get("additions", 0),
+            deletions=f.get("deletions", 0),
+            changes=f.get("changes", 0),
+            binary=f.get("binary", False),
+            patch=f.get("patch", ""),
+        )
+        for f in files_data
+    ]
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/comments",
+    summary="List PR review comments",
+    operation_id="GiteaListPRComments",
+)
+async def list_pr_comments(
+    owner: str,
+    repo: str,
+    index: int,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=30, ge=1, le=100, description="Items per page"),
+) -> list:
+    """
+    List review comments on a pull request.
+
+    Returns review/inline comments (distinct from general issue comments).
+    """
+    return await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/comments",
+        params={"page": page, "limit": limit},
+    )
+
+
+@router.delete(
+    "/issues/{owner}/{repo}/{index}/comments/{comment_id}",
+    summary="Delete a comment",
+    operation_id="GiteaDeleteComment",
+)
+async def delete_comment(
+    owner: str,
+    repo: str,
+    index: int,
+    comment_id: int,
+) -> dict:
+    """
+    Delete a comment on an issue or pull request.
+
+    Use this to clean up outdated or incorrect comments.
+    """
+    logger.info(
+        "Deleting comment", owner=owner, repo=repo, index=index, comment_id=comment_id
+    )
+
+    await _gitea_request(
+        "DELETE",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+    )
+
+    logger.info("Comment deleted", owner=owner, repo=repo, comment_id=comment_id)
+    return {"status": "deleted", "comment_id": comment_id}
+
+
+@router.post(
+    "/pulls/{owner}/{repo}/{index}/reviews",
+    summary="Submit a PR review",
+    operation_id="GiteaSubmitPRReview",
+)
+async def submit_pr_review(
+    owner: str,
+    repo: str,
+    index: int,
+    review: ReviewCreate,
+) -> dict:
+    """
+    Submit a review on a pull request.
+
+    Review types: `approved`, `changes_requested`, or `comment`.
+    """
+    logger.info(
+        "Submitting PR review",
+        owner=owner,
+        repo=repo,
+        pr_index=index,
+        review_type=review.type,
+    )
+
+    payload = {
+        "body": review.body,
+        "type": review.type,
+    }
+    if review.commit_id:
+        payload["commit_id"] = review.commit_id
+
+    result = await _gitea_request(
+        "POST",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/reviews",
+        json=payload,
+    )
+
+    logger.info("PR review submitted", owner=owner, repo=repo, pr_index=index)
+    return result
+
+
+@router.post(
+    "/pulls/{owner}/{repo}/{index}/summary",
+    summary="Get PR summary",
+    operation_id="GiteaGetPRSummary",
+)
+async def get_pr_summary(
+    owner: str,
+    repo: str,
+    index: int,
+) -> PRSummaryResponse:
+    """
+    Get a structured summary of a pull request.
+
+    Combines PR metadata with file change statistics to produce
+    a concise overview. Useful for quick triage before deep review.
+    """
+    logger.info("Getting PR summary", owner=owner, repo=repo, pr_index=index)
+
+    # Fetch PR details
+    pr_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}",
+    )
+
+    # Fetch changed files
+    files_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/files",
+    )
+
+    # Calculate stats
+    total_additions = sum(f.get("additions", 0) for f in files_data)
+    total_deletions = sum(f.get("deletions", 0) for f in files_data)
+    changed_files = [f.get("filename", "") for f in files_data]
+
+    # Build auto-summary
+    base_branch = pr_data.get("base", {}).get("ref", "")
+    head_branch = pr_data.get("head", {}).get("ref", "")
+    pr_title = pr_data.get("title", "")
+    pr_body = pr_data.get("body", "")
+    pr_state = pr_data.get("state", "")
+
+    # Generate a concise summary from available data
+    summary_parts = []
+    summary_parts.append(f"**PR #{index}: {pr_title}**")
+    summary_parts.append(f"State: {pr_state} | {head_branch} → {base_branch}")
+    summary_parts.append(
+        f"Changes: {len(files_data)} files, +{total_additions} -{total_deletions} lines"
+    )
+    if pr_body:
+        # Truncate body for summary
+        body_preview = pr_body[:200]
+        if len(pr_body) > 200:
+            body_preview += "..."
+        summary_parts.append(f"Description: {body_preview}")
+
+    summary = "\n".join(summary_parts)
+
+    return PRSummaryResponse(
+        pr_number=pr_data.get("number", index),
+        title=pr_title,
+        state=pr_state,
+        body=pr_body,
+        files_changed=len(files_data),
+        total_additions=total_additions,
+        total_deletions=total_deletions,
+        changed_files=changed_files,
+        base_branch=base_branch,
+        head_branch=head_branch,
+        summary=summary,
     )
 
 
@@ -684,7 +1033,9 @@ async def get_pr_pipeline(
 
     head_branch = pr_data.get("head", {}).get("ref", "")
     if not head_branch:
-        raise GiteaError(f"Could not determine head branch for PR #{index}", status_code=404)
+        raise GiteaError(
+            f"Could not determine head branch for PR #{index}", status_code=404
+        )
 
     logger.info("Looking up pipeline for branch", branch=head_branch)
 
@@ -701,7 +1052,9 @@ async def get_pr_pipeline(
     )
 
     # The API returns {"workflow_runs": [...], "total_count": N}
-    runs = runs_data if isinstance(runs_data, list) else runs_data.get("workflow_runs", [])
+    runs = (
+        runs_data if isinstance(runs_data, list) else runs_data.get("workflow_runs", [])
+    )
 
     if not runs:
         return PipelineStatusResponse(
@@ -778,7 +1131,11 @@ async def get_pipeline_output(
             "GET",
             f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
         )
-        jobs_list = jobs_data if isinstance(jobs_data, list) else jobs_data.get("workflow_jobs", [])
+        jobs_list = (
+            jobs_data
+            if isinstance(jobs_data, list)
+            else jobs_data.get("workflow_jobs", [])
+        )
         logger.info("Fetched jobs via /jobs endpoint", count=len(jobs_list))
     except GiteaError as e:
         if e.status_code == 404:
@@ -794,7 +1151,11 @@ async def get_pipeline_output(
                 "GET",
                 f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/tasks",
             )
-            all_tasks = tasks_data if isinstance(tasks_data, list) else tasks_data.get("workflow_runs", [])
+            all_tasks = (
+                tasks_data
+                if isinstance(tasks_data, list)
+                else tasks_data.get("workflow_runs", [])
+            )
             # Filter to only tasks for this run
             if run_number is not None:
                 jobs_list = [t for t in all_tasks if t.get("run_number") == run_number]
@@ -831,11 +1192,11 @@ async def get_pipeline_output(
     for job in jobs_list:
         job_id = job.get("id", 0)
         job_name = job.get("name", f"job-{job_id}")
-        log_sections.append(f"\n{'='*60}")
+        log_sections.append(f"\n{'=' * 60}")
         log_sections.append(f"Job: {job_name} (ID: {job_id})")
         log_sections.append(f"Status: {job.get('status', 'unknown')}")
         log_sections.append(f"Conclusion: {job.get('conclusion', 'N/A')}")
-        log_sections.append(f"{'='*60}\n")
+        log_sections.append(f"{'=' * 60}\n")
 
         try:
             # Try to fetch job logs via the standard endpoint
@@ -857,7 +1218,9 @@ async def get_pipeline_output(
                                 headers=settings.gitea_headers,
                             )
                             log_content.raise_for_status()
-                            log_sections.append(log_content.text[:50000])  # Limit log size
+                            log_sections.append(
+                                log_content.text[:50000]
+                            )  # Limit log size
                     except Exception as e:
                         log_sections.append(f"[Could not fetch logs: {e}]")
                 else:
@@ -870,9 +1233,13 @@ async def get_pipeline_output(
                 logs_available = False
                 job_url = job.get("url", job.get("html_url", ""))
                 if job_url:
-                    log_sections.append(f"[Logs not available via API. View in browser: {job_url}]")
+                    log_sections.append(
+                        f"[Logs not available via API. View in browser: {job_url}]"
+                    )
                 else:
-                    log_sections.append(f"[Logs not available via API for job {job_id}]")
+                    log_sections.append(
+                        f"[Logs not available via API for job {job_id}]"
+                    )
                 logger.info(
                     "Logs endpoint not available for job",
                     owner=owner,
