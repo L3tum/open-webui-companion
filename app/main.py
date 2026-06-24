@@ -71,8 +71,14 @@ A companion server for Open-WebUI that provides persistent tools for:
 - **GiteaListIssues**: List issues
 - **GiteaCreatePR**: Create a pull request
 - **GiteaListPRs**: List pull requests
+- **GiteaGetPRDiff**: Get the full unified diff for a PR
+- **GiteaGetPRFiles**: Get changed files with stats (additions, deletions)
+- **GiteaListPRComments**: List review/inline comments on a PR
 - **GiteaPostComment**: Post a comment on an issue or PR
 - **GiteaListComments**: List comments on an issue or PR
+- **GiteaDeleteComment**: Delete a comment (cleanup)
+- **GiteaSubmitPRReview**: Submit a review (approve, request changes, comment)
+- **GiteaGetPRSummary**: Get a structured PR summary with stats
 - **GiteaGetPRPipeline**: Get pipeline status for a PR (check if CI passed)
 - **GiteaGetPipelineOutput**: Get full pipeline logs for a workflow run
 - **GiteaHealth**: Check Gitea connection

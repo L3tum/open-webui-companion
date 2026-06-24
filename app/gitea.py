@@ -94,6 +94,44 @@ class CommentCreate(BaseModel):
     body: str = Field(..., description="Comment text")
 
 
+class PRFileChange(BaseModel):
+    """Schema for a single file changed in a PR."""
+
+    filename: str = Field(..., description="File path")
+    status: str = Field(..., description="Change status: added, removed, modified, renamed")
+    additions: int = Field(default=0, description="Lines added")
+    deletions: int = Field(default=0, description="Lines deleted")
+    changes: int = Field(default=0, description="Total line changes")
+    binary: bool = Field(default=False, description="Is a binary file")
+    patch: str = Field(default="", description="Unified diff patch")
+
+
+class ReviewCreate(BaseModel):
+    """Schema for submitting a PR review."""
+
+    owner: str = Field(..., description="Repository owner")
+    repo: str = Field(..., description="Repository name")
+    body: str = Field(default="", description="Review comment text")
+    type: str = Field(..., description="Review type: approved, changes_requested, comment")
+    commit_id: str = Field(default="", description="Commit ID to review (uses latest if empty)")
+
+
+class PRSummaryResponse(BaseModel):
+    """Schema for PR summary response."""
+
+    pr_number: int = Field(..., description="PR number")
+    title: str = Field(..., description="PR title")
+    state: str = Field(default="", description="PR state: open, closed, merged")
+    body: str = Field(default="", description="PR description/body")
+    files_changed: int = Field(default=0, description="Number of files changed")
+    total_additions: int = Field(default=0, description="Total lines added")
+    total_deletions: int = Field(default=0, description="Total lines deleted")
+    changed_files: list[str] = Field(default_factory=list, description="List of changed file paths")
+    base_branch: str = Field(default="", description="Target base branch")
+    head_branch: str = Field(default="", description="Source head branch")
+    summary: str = Field(default="", description="Auto-generated summary of the PR")
+
+
 # ─── Pipeline / Actions models ──────────────────────────────────────────────
 
 
@@ -587,6 +625,243 @@ async def list_comments(
         "GET",
         f"{settings.gitea_api_url}/repos/{owner}/{repo}/issues/{index}/comments",
         params={"page": page, "limit": limit},
+    )
+
+
+# ─── PR detail endpoints ────────────────────────────────────────────────────
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/diff",
+    summary="Get PR diff",
+    operation_id="GiteaGetPRDiff",
+)
+async def get_pr_diff(
+    owner: str,
+    repo: str,
+    index: int,
+    style: str = Query(default="unified", description="Diff style: unified, separate, or full"),
+) -> str:
+    """
+    Get the full unified diff for a pull request.
+
+    Returns the raw diff text showing all changes in the PR.
+    """
+    logger.info("Getting PR diff", owner=owner, repo=repo, pr_index=index)
+
+    response = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/diff",
+        params={"style": style},
+    )
+
+    # The diff endpoint returns text, not JSON — handle raw response
+    if isinstance(response, str):
+        return response
+    # If it came back as a dict (some Gitea versions), try to extract
+    if isinstance(response, dict):
+        return response.get("content", response.get("diff", str(response)))
+    return str(response)
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/files",
+    summary="Get PR changed files",
+    operation_id="GiteaGetPRFiles",
+)
+async def get_pr_files(
+    owner: str,
+    repo: str,
+    index: int,
+) -> list[PRFileChange]:
+    """
+    Get the list of files changed in a pull request.
+
+    Returns file-level change summaries (additions, deletions, status).
+    """
+    logger.info("Getting PR files", owner=owner, repo=repo, pr_index=index)
+
+    files_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/files",
+    )
+
+    return [
+        PRFileChange(
+            filename=f.get("filename", ""),
+            status=f.get("status", ""),
+            additions=f.get("additions", 0),
+            deletions=f.get("deletions", 0),
+            changes=f.get("changes", 0),
+            binary=f.get("binary", False),
+            patch=f.get("patch", ""),
+        )
+        for f in files_data
+    ]
+
+
+@router.get(
+    "/pulls/{owner}/{repo}/{index}/comments",
+    summary="List PR review comments",
+    operation_id="GiteaListPRComments",
+)
+async def list_pr_comments(
+    owner: str,
+    repo: str,
+    index: int,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=30, ge=1, le=100, description="Items per page"),
+) -> list:
+    """
+    List review comments on a pull request.
+
+    Returns review/inline comments (distinct from general issue comments).
+    """
+    return await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/comments",
+        params={"page": page, "limit": limit},
+    )
+
+
+@router.delete(
+    "/issues/{owner}/{repo}/{index}/comments/{comment_id}",
+    summary="Delete a comment",
+    operation_id="GiteaDeleteComment",
+)
+async def delete_comment(
+    owner: str,
+    repo: str,
+    index: int,
+    comment_id: int,
+) -> dict:
+    """
+    Delete a comment on an issue or pull request.
+
+    Use this to clean up outdated or incorrect comments.
+    """
+    logger.info("Deleting comment", owner=owner, repo=repo, index=index, comment_id=comment_id)
+
+    result = await _gitea_request(
+        "DELETE",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+    )
+
+    logger.info("Comment deleted", owner=owner, repo=repo, comment_id=comment_id)
+    return {"status": "deleted", "comment_id": comment_id}
+
+
+@router.post(
+    "/pulls/{owner}/{repo}/{index}/reviews",
+    summary="Submit a PR review",
+    operation_id="GiteaSubmitPRReview",
+)
+async def submit_pr_review(
+    owner: str,
+    repo: str,
+    index: int,
+    review: ReviewCreate,
+) -> dict:
+    """
+    Submit a review on a pull request.
+
+    Review types: `approved`, `changes_requested`, or `comment`.
+    """
+    logger.info(
+        "Submitting PR review",
+        owner=owner,
+        repo=repo,
+        pr_index=index,
+        review_type=review.type,
+    )
+
+    payload = {
+        "body": review.body,
+        "type": review.type,
+    }
+    if review.commit_id:
+        payload["commit_id"] = review.commit_id
+
+    result = await _gitea_request(
+        "POST",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/reviews",
+        json=payload,
+    )
+
+    logger.info("PR review submitted", owner=owner, repo=repo, pr_index=index)
+    return result
+
+
+@router.post(
+    "/pulls/{owner}/{repo}/{index}/summary",
+    summary="Get PR summary",
+    operation_id="GiteaGetPRSummary",
+)
+async def get_pr_summary(
+    owner: str,
+    repo: str,
+    index: int,
+) -> PRSummaryResponse:
+    """
+    Get a structured summary of a pull request.
+
+    Combines PR metadata with file change statistics to produce
+    a concise overview. Useful for quick triage before deep review.
+    """
+    logger.info("Getting PR summary", owner=owner, repo=repo, pr_index=index)
+
+    # Fetch PR details
+    pr_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}",
+    )
+
+    # Fetch changed files
+    files_data = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/files",
+    )
+
+    # Calculate stats
+    total_additions = sum(f.get("additions", 0) for f in files_data)
+    total_deletions = sum(f.get("deletions", 0) for f in files_data)
+    changed_files = [f.get("filename", "") for f in files_data]
+
+    # Build auto-summary
+    base_branch = pr_data.get("base", {}).get("ref", "")
+    head_branch = pr_data.get("head", {}).get("ref", "")
+    pr_title = pr_data.get("title", "")
+    pr_body = pr_data.get("body", "")
+    pr_state = pr_data.get("state", "")
+
+    # Generate a concise summary from available data
+    summary_parts = []
+    summary_parts.append(f"**PR #{index}: {pr_title}**")
+    summary_parts.append(f"State: {pr_state} | {head_branch} → {base_branch}")
+    summary_parts.append(
+        f"Changes: {len(files_data)} files, +{total_additions} -{total_deletions} lines"
+    )
+    if pr_body:
+        # Truncate body for summary
+        body_preview = pr_body[:200]
+        if len(pr_body) > 200:
+            body_preview += "..."
+        summary_parts.append(f"Description: {body_preview}")
+
+    summary = "\n".join(summary_parts)
+
+    return PRSummaryResponse(
+        pr_number=pr_data.get("number", index),
+        title=pr_title,
+        state=pr_state,
+        body=pr_body,
+        files_changed=len(files_data),
+        total_additions=total_additions,
+        total_deletions=total_deletions,
+        changed_files=changed_files,
+        base_branch=base_branch,
+        head_branch=head_branch,
+        summary=summary,
     )
 
 
