@@ -5,7 +5,7 @@
 I had some bigger goals with this but decided to switch away and build something else. As such the functionality here is basically the same as Forgejo-MCP or Gitea-MCP projects.
 
 
-A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management and Gitea integration.
+A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management, Gitea integration, and Open-WebUI notes synchronization.
 
 ## Features
 
@@ -23,9 +23,35 @@ A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/
 - **GiteaGetRepo**: Get repository details
 - **GiteaCreateFile**: Create or update a file
 - **GiteaGetFile**: Get file contents
+- **GiteaListFiles**: List files in a directory
 - **GiteaCreateIssue**: Create an issue
 - **GiteaListIssues**: List issues
+- **GiteaUpdateIssue**: Update an issue's title and/or description
+- **GiteaCreatePR**: Create a pull request
+- **GiteaListPRs**: List pull requests
+- **GiteaUpdatePR**: Update a pull request's title and/or description
+- **GiteaPostComment**: Post a comment on an issue or PR
+- **GiteaListComments**: List comments on an issue or PR
+- **GiteaDeleteComment**: Delete a comment
+- **GiteaGetPRDiff**: Get a PR's diff
+- **GiteaGetPRFiles**: Get changed files in a PR
+- **GiteaListPRComments**: List PR review comments
+- **GiteaSubmitPRReview**: Submit a PR review
+- **GiteaGetPRSummary**: Get a PR summary
+- **GiteaGetPRPipeline**: Get pipeline status for a PR
+- **GiteaGetPipelineOutput**: Get pipeline output/logs
+- **GiteaGetToken**: Get the configured Gitea API token
 - **GiteaHealth**: Check Gitea connection
+
+### Open-WebUI Notes Sync
+- **NotesSyncTrigger**: Manually trigger a sync of Open-WebUI notes into a Knowledge Base
+- **NotesSyncStatus**: Get the current status of the notes sync
+- **NotesSyncHealth**: Check if Open-WebUI is configured and accessible
+- **NotesSyncDebug**: Test all known notes API endpoints and return raw responses
+
+### Health
+- **HealthCheck**: Health check endpoint for monitoring
+- **Root**: Root endpoint with API documentation links
 
 ## Quick Start
 
@@ -79,7 +105,7 @@ The tools will now be available to any model that supports function calling.
 Add this to your model's system prompt for best results:
 
 ```
-You have access to evidence management and Gitea tools.
+You have access to evidence management, Gitea, and Open-WebUI notes sync tools.
 
 Evidence Management:
 - Before answering factual questions, check EvidenceList for stored evidence.
@@ -87,9 +113,14 @@ Evidence Management:
 - Evidence persists across conversations to reduce hallucinations.
 
 Gitea Integration:
-- Use Gitea tools to create repositories, edit files, and manage issues.
+- Use Gitea tools to create repositories, edit files, manage issues, and review pull requests.
 - Always confirm with the user before making changes on Gitea.
 - Use GiteaCreateFile to scaffold new projects or update existing code.
+- Check pipeline status with GiteaGetPRPipeline after creating or updating PRs.
+
+Open-WebUI Notes Sync:
+- Use NotesSyncTrigger to sync user notes into a Knowledge Base.
+- Check NotesSyncStatus to see if a sync is in progress.
 ```
 
 ## API Documentation
@@ -131,9 +162,12 @@ openwebui-companion-server/
 │   ├── __init__.py
 │   ├── main.py          # FastAPI application
 │   ├── config.py        # Configuration management
+│   ├── errors.py        # Error handling
+│   ├── logging.py       # Logging configuration
 │   ├── evidence.py      # Evidence endpoints
-│   └── gitea.py         # Gitea endpoints
-├── tests/
+│   ├── gitea.py         # Gitea endpoints
+│   ├── notes_sync.py    # Open-WebUI notes sync endpoints
+│   └── scheduler.py     # Background task scheduler
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
