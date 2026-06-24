@@ -921,7 +921,102 @@ async def get_token() -> dict:
 # These use the Gitea/Forgejo Actions API. Note: Forgejo's Actions API differs
 # from GitHub Actions. The endpoints /actions/runs/{id}/jobs and job log
 # endpoints may not be available on all Forgejo versions. We fall back to
-# /actions/tasks?run_id={id} for job listing when /jobs is unavailable.
+# /actions/tasks for job listing when /jobs is unavailable.
+# For pre-v16 instances, we also fall back to the frontend endpoint:
+# /{owner}/{repo}/actions/runs/{run_id}/jobs/{job_index}/attempt/1
+
+
+async def _fetch_frontend_job_state(
+    owner: str, repo: str, run_id: int, job_index: int, attempt: int = 1,
+) -> dict | None:
+    """Fetch job state and logs from the Forgejo frontend endpoint.
+
+    This endpoint is used by the web UI and works on pre-v16 instances
+    where the /api/v1/.../jobs endpoints don't exist yet.
+
+    Returns the parsed JSON response, or None on failure.
+    """
+    url = f"{settings.gitea_base_url}/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_index}/attempt/{attempt}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=settings.gitea_headers)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.debug(
+            "Frontend job state fetch failed",
+            owner=owner, repo=repo, run_id=run_id,
+            job_index=job_index, error=str(e),
+        )
+        return None
+
+
+async def _fetch_pipeline_output_via_frontend(
+    owner: str, repo: str, run_id: int,
+) -> tuple[list[dict], list[str]]:
+    """Fetch jobs and logs via the frontend endpoint (pre-v16 fallback).
+
+    Returns (jobs_list, log_sections) where jobs_list contains raw job dicts
+    and log_sections contains formatted log text for each job.
+    """
+    log_sections = []
+    jobs_list = []
+
+    # Fetch job 0 to get the run's job list from state.run.jobs
+    state_0 = await _fetch_frontend_job_state(owner, repo, run_id, 0)
+    if not state_0:
+        return [], ["[Frontend pipeline endpoint unavailable]"]
+
+    run_jobs = state_0.get("state", {}).get("run", {}).get("jobs", [])
+    if not run_jobs:
+        return [], ["[No jobs found in pipeline run]"]
+
+    # Process all jobs
+    for job_idx, job_info in enumerate(run_jobs):
+        state = await _fetch_frontend_job_state(owner, repo, run_id, job_idx)
+        if not state:
+            jobs_list.append(job_info)
+            log_sections.append(f"\n{'='*60}")
+            log_sections.append(f"Job: {job_info.get('name', 'unknown')} (ID: {job_info.get('id', 0)})")
+            log_sections.append(f"Status: {job_info.get('status', 'unknown')}")
+            log_sections.append(f"[Could not fetch logs]")
+            log_sections.append(f"{'='*60}")
+            continue
+
+        jobs_list.append(job_info)
+        current_job = state.get("state", {}).get("currentJob", {})
+        steps = current_job.get("steps", [])
+        steps_log = state.get("logs", {}).get("stepsLog", [])
+
+        job_name = job_info.get("name", "unknown")
+        log_sections.append(f"\n{'='*60}")
+        log_sections.append(f"Job: {job_name} (ID: {job_info.get('id', 0)})")
+        log_sections.append(f"Status: {job_info.get('status', 'unknown')}")
+        log_sections.append(f"Duration: {job_info.get('duration', '?')}")
+        log_sections.append(f"{'='*60}\n")
+
+        # Step summary
+        for step in steps:
+            status_icon = "✓" if step.get("status") == "success" else "✗" if step.get("status") == "failure" else "○"
+            log_sections.append(
+                f"  {status_icon} [{step.get('status', '?').upper()}] "
+                f"{step.get('summary', '')} ({step.get('duration', '?')})"
+            )
+        log_sections.append("")
+
+        # Log lines from all steps
+        for step_log in steps_log:
+            step_idx = step_log.get("step", 0)
+            step_name = (
+                steps[step_idx].get("summary", f"Step {step_idx}")
+                if step_idx < len(steps) else f"Step {step_idx}"
+            )
+            log_sections.append(f"--- {step_name} ---")
+            for line in step_log.get("lines", []):
+                log_sections.append(line.get("message", ""))
+            log_sections.append("")
+
+    return jobs_list, log_sections
 
 
 @router.get(
@@ -1102,8 +1197,9 @@ async def get_pipeline_output(
     # Fetch logs for each job
     log_sections = []
     logs_available = True
+    first_job_logs_failed = False
 
-    for job in jobs_list:
+    for job_idx, job in enumerate(jobs_list):
         job_id = job.get("id", 0)
         job_name = job.get("name", f"job-{job_id}")
         log_sections.append(f"\n{'='*60}")
@@ -1141,7 +1237,39 @@ async def get_pipeline_output(
                 log_sections.append(str(log_response))
         except GiteaError as e:
             if e.status_code == 404:
-                # Logs endpoint not available on this Forgejo version
+                # Logs endpoint not available — try frontend fallback on first failure
+                if not first_job_logs_failed:
+                    first_job_logs_failed = True
+                    logger.info(
+                        "API logs endpoint unavailable, trying frontend fallback",
+                        owner=owner, repo=repo, run_id=run_id,
+                    )
+                    frontend_jobs, frontend_logs = await _fetch_pipeline_output_via_frontend(
+                        owner, repo, run_id,
+                    )
+                    if frontend_logs and frontend_logs[0] != "[Frontend pipeline endpoint unavailable]":
+                        # Use frontend data for the response
+                        jobs = [
+                            PipelineJob(
+                                job_id=j.get("id", 0),
+                                name=j.get("name", ""),
+                                status=j.get("status", ""),
+                                conclusion=j.get("status", ""),
+                                started_at="",
+                                url="",
+                            )
+                            for j in frontend_jobs
+                        ]
+                        return PipelineOutputResponse(
+                            run_id=run_data.get("id", run_id),
+                            status=run_data.get("status", "unknown"),
+                            conclusion=run_data.get("conclusion", ""),
+                            name=run_data.get("name", ""),
+                            jobs=jobs,
+                            logs="\n".join(frontend_logs),
+                        )
+
+                # Frontend fallback also failed or already tried
                 logs_available = False
                 job_url = job.get("url", job.get("html_url", ""))
                 if job_url:

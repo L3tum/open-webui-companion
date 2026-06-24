@@ -36,10 +36,14 @@ class Settings:
     EVIDENCE_FILE: str = os.path.join(EVIDENCE_DIR, "evidence.json")
 
     @property
+    def gitea_base_url(self) -> str:
+        """Get the Gitea instance base URL (no /api/v1 suffix)."""
+        return self.GITEA_INSTANCE_URL.rstrip("/")
+
+    @property
     def gitea_api_url(self) -> str:
         """Get the Gitea API base URL."""
-        url = self.GITEA_INSTANCE_URL.rstrip("/")
-        return f"{url}/api/v1"
+        return f"{self.gitea_base_url}/api/v1"
 
     @property
     def gitea_headers(self) -> dict:
