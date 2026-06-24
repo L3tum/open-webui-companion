@@ -88,7 +88,9 @@ async def add_evidence(item: EvidenceItem) -> dict:
 @router.get("/", summary="List all stored evidence", operation_id="EvidenceList")
 async def list_evidence(
     tag: Optional[str] = Query(default="", description="Optional tag to filter by"),
-    limit: Optional[int] = Query(default=50, ge=1, le=200, description="Maximum items to return"),
+    limit: Optional[int] = Query(
+        default=50, ge=1, le=200, description="Maximum items to return"
+    ),
 ) -> list:
     """
     Retrieve a list of all stored evidence items.
@@ -107,7 +109,9 @@ async def list_evidence(
     return data[:limit]
 
 
-@router.get("/{evidence_id}", summary="Get a specific evidence item", operation_id="EvidenceGet")
+@router.get(
+    "/{evidence_id}", summary="Get a specific evidence item", operation_id="EvidenceGet"
+)
 async def get_evidence(evidence_id: int) -> dict:
     """Retrieve a specific evidence item by its ID."""
     data = _load_evidence()
@@ -119,7 +123,9 @@ async def get_evidence(evidence_id: int) -> dict:
     raise HTTPException(status_code=404, detail=f"Evidence #{evidence_id} not found")
 
 
-@router.put("/{evidence_id}", summary="Update an evidence item", operation_id="EvidenceUpdate")
+@router.put(
+    "/{evidence_id}", summary="Update an evidence item", operation_id="EvidenceUpdate"
+)
 async def update_evidence(evidence_id: int, item: EvidenceItem) -> dict:
     """Update an existing evidence item."""
     data = _load_evidence()
@@ -130,7 +136,9 @@ async def update_evidence(evidence_id: int, item: EvidenceItem) -> dict:
                 "content": item.content,
                 "source": item.source,
                 "tags": item.tags,
-                "added_at": entry.get("added_at", datetime.now(timezone.utc).isoformat()),
+                "added_at": entry.get(
+                    "added_at", datetime.now(timezone.utc).isoformat()
+                ),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             _save_evidence(data)
@@ -140,7 +148,9 @@ async def update_evidence(evidence_id: int, item: EvidenceItem) -> dict:
     raise HTTPException(status_code=404, detail=f"Evidence #{evidence_id} not found")
 
 
-@router.delete("/{evidence_id}", summary="Delete an evidence item", operation_id="EvidenceDelete")
+@router.delete(
+    "/{evidence_id}", summary="Delete an evidence item", operation_id="EvidenceDelete"
+)
 async def delete_evidence(evidence_id: int) -> dict:
     """Delete an evidence item by its ID."""
     data = _load_evidence()
@@ -148,7 +158,9 @@ async def delete_evidence(evidence_id: int) -> dict:
     data = [e for e in data if e.get("id") != evidence_id]
 
     if len(data) == original_len:
-        raise HTTPException(status_code=404, detail=f"Evidence #{evidence_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"Evidence #{evidence_id} not found"
+        )
 
     _save_evidence(data)
     logger.info("Evidence deleted", evidence_id=evidence_id)

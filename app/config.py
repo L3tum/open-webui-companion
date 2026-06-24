@@ -15,7 +15,9 @@ class Settings:
     # Gitea Configuration
     GITEA_INSTANCE_URL: str = os.getenv("GITEA_INSTANCE_URL", "https://gitea.com")
     GITEA_TOKEN: str = os.getenv("GITEA_TOKEN", "")
-    EXPOSE_GITEA_TOKEN: bool = os.getenv("EXPOSE_GITEA_TOKEN", "false").lower() == "true"
+    EXPOSE_GITEA_TOKEN: bool = (
+        os.getenv("EXPOSE_GITEA_TOKEN", "false").lower() == "true"
+    )
 
     # Open-WebUI Configuration
     OWUI_INSTANCE_URL: str = os.getenv("OWUI_INSTANCE_URL", "http://localhost:8080")

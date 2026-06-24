@@ -60,7 +60,9 @@ async def _owui_request(method: str, path: str, **kwargs) -> dict:
             status_code=e.response.status_code,
         ) from e
     except httpx.RequestError as e:
-        logger.error("Open-WebUI API request error", method=method, path=path, error=str(e))
+        logger.error(
+            "Open-WebUI API request error", method=method, path=path, error=str(e)
+        )
         raise OWUIError(f"Failed to connect to Open-WebUI: {e}") from e
 
 
@@ -82,20 +84,34 @@ async def _fetch_notes() -> list:
             response = await _owui_request("GET", path)
             # Handle various response formats
             if isinstance(response, list):
-                logger.info("Notes fetched successfully", endpoint=path, count=len(response))
+                logger.info(
+                    "Notes fetched successfully", endpoint=path, count=len(response)
+                )
                 return response
             if isinstance(response, dict):
                 if "results" in response:
-                    logger.info("Notes fetched successfully", endpoint=path, count=len(response["results"]))
+                    logger.info(
+                        "Notes fetched successfully",
+                        endpoint=path,
+                        count=len(response["results"]),
+                    )
                     return response["results"]
                 if "notes" in response:
-                    logger.info("Notes fetched successfully", endpoint=path, count=len(response["notes"]))
+                    logger.info(
+                        "Notes fetched successfully",
+                        endpoint=path,
+                        count=len(response["notes"]),
+                    )
                     return response["notes"]
                 # Single note or empty dict
                 if response:
                     logger.info("Notes fetched successfully", endpoint=path, count=1)
                     return [response]
-            logger.debug("Endpoint returned non-note data", endpoint=path, type=type(response).__name__)
+            logger.debug(
+                "Endpoint returned non-note data",
+                endpoint=path,
+                type=type(response).__name__,
+            )
         except OWUIError as e:
             logger.debug("Endpoint failed", endpoint=path, error=str(e))
             continue
@@ -123,13 +139,15 @@ async def _build_manifest(notes: list) -> list:
         checksum = hashlib.sha256(content.encode()).hexdigest()
         size = len(content.encode())
 
-        manifest.append({
-            "filename": f"{title}.md",
-            "checksum": checksum,
-            "content": content,
-            "size": size,
-            "note_id": note_id,
-        })
+        manifest.append(
+            {
+                "filename": f"{title}.md",
+                "checksum": checksum,
+                "content": content,
+                "size": size,
+                "note_id": note_id,
+            }
+        )
 
     return manifest
 
@@ -173,7 +191,9 @@ async def _sync_to_kb(kb_id: Optional[str] = None) -> dict:
     if needs_upload:
         try:
             diff_payload = {"manifest": manifest}
-            await _owui_request("POST", f"/knowledge/{kb_id}/sync/diff", json=diff_payload)
+            await _owui_request(
+                "POST", f"/knowledge/{kb_id}/sync/diff", json=diff_payload
+            )
 
             for item in needs_upload:
                 try:
@@ -182,15 +202,21 @@ async def _sync_to_kb(kb_id: Optional[str] = None) -> dict:
                         "content": item["content"],
                         "size": item["size"],
                     }
-                    await _owui_request("POST", f"/knowledge/{kb_id}/sync/upload", json=upload_payload)
+                    await _owui_request(
+                        "POST", f"/knowledge/{kb_id}/sync/upload", json=upload_payload
+                    )
                     results["uploaded"].append(item["filename"])
                     logger.debug("Uploaded note", filename=item["filename"])
                 except OWUIError as e:
-                    logger.error("Failed to upload note", filename=item["filename"], error=str(e))
-                    results.setdefault("errors", []).append({
-                        "filename": item["filename"],
-                        "error": str(e),
-                    })
+                    logger.error(
+                        "Failed to upload note", filename=item["filename"], error=str(e)
+                    )
+                    results.setdefault("errors", []).append(
+                        {
+                            "filename": item["filename"],
+                            "error": str(e),
+                        }
+                    )
 
         except OWUIError as e:
             logger.error("Sync diff failed", error=str(e))
@@ -204,7 +230,9 @@ async def _sync_to_kb(kb_id: Optional[str] = None) -> dict:
             logger.info("Cleaned up stale files", count=len(stale_files))
         except OWUIError as e:
             logger.error("Cleanup failed", error=str(e))
-            results.setdefault("errors", []).append({"operation": "cleanup", "error": str(e)})
+            results.setdefault("errors", []).append(
+                {"operation": "cleanup", "error": str(e)}
+            )
 
     # Update sync status
     sync_status.last_sync = datetime.now(timezone.utc).isoformat()
@@ -275,7 +303,9 @@ async def owui_health() -> dict:
         return {"status": "error", "message": str(e)}
 
 
-@router.get("/debug", summary="Debug notes API endpoints", operation_id="NotesSyncDebug")
+@router.get(
+    "/debug", summary="Debug notes API endpoints", operation_id="NotesSyncDebug"
+)
 async def debug_endpoints() -> dict:
     """
     Test all known notes API endpoints and return their raw responses.
@@ -301,18 +331,22 @@ async def debug_endpoints() -> dict:
             headers = settings.owui_headers
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.request("GET", url, headers=headers)
-                results.append({
-                    "endpoint": path,
-                    "status_code": response.status_code,
-                    "content_type": response.headers.get("content-type", "unknown"),
-                    "body_preview": response.text[:500],
-                    "body_length": len(response.text),
-                })
+                results.append(
+                    {
+                        "endpoint": path,
+                        "status_code": response.status_code,
+                        "content_type": response.headers.get("content-type", "unknown"),
+                        "body_preview": response.text[:500],
+                        "body_length": len(response.text),
+                    }
+                )
         except Exception as e:
-            results.append({
-                "endpoint": path,
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "endpoint": path,
+                    "error": str(e),
+                }
+            )
 
     return {
         "owui_url": settings.OWUI_INSTANCE_URL,
