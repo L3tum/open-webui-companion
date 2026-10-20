@@ -35,8 +35,6 @@ class OWUIError(Exception):
 class ConfigError(Exception):
     """Raised when required configuration is missing."""
 
-    pass
-
 
 def _error_response(detail: str, status_code: int) -> JSONResponse:
     """Create a consistent JSON error response."""
@@ -92,7 +90,7 @@ def add_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ConfigError)
     async def handle_config_error(request: Request, exc: ConfigError) -> JSONResponse:
         """Handle configuration errors."""
-        logger.error("Configuration error: %s", exc)
+        logger.error("Configuration error", detail=str(exc), path=request.url.path)
         return _error_response(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @app.exception_handler(httpx.HTTPStatusError)

@@ -49,6 +49,17 @@ A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/
 - **NotesSyncHealth**: Check if Open-WebUI is configured and accessible
 - **NotesSyncDebug**: Test all known notes API endpoints and return raw responses
 
+### Context Compaction
+Inspect a chat's model context, manually compact it, and *recall* dropped
+detail by searching the full un-compacted history (within one chat or
+across all chats). Uses the same OWUI_INSTANCE_URL / OWUI_TOKEN as notes
+sync; chat-data calls act as the validated calling user (see
+[Per-user identity](#per-user-identity)).
+- **ContextUsage**: Inspect a chat's model context window usage
+- **ContextCompact**: Manually compact a chat's context
+- **ContextSearch**: Search a chat's (or all accessible chats') full history
+- **ContextHealth**: Check OWUI connection and resolved identity
+
 ### Health
 - **HealthCheck**: Health check endpoint for monitoring
 - **Root**: Root endpoint with API documentation links
@@ -96,9 +107,16 @@ uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
 1. Go to **Admin Settings → Tools** in Open-WebUI
 2. Click **Add Tool** and select **OpenAPI**
 3. Enter the URL: `http://your-server-ip:8090/openapi.json`
-4. Save
+4. Set **Authentication type** to **Session** — this forwards the calling
+   user's JWT on every tool call, so each call acts as that user (see
+   [Per-user identity](#per-user-identity))
+5. Save
 
 The tools will now be available to any model that supports function calling.
+
+> **Legacy mode:** Bearer authentication with a static Open-WebUI API key
+> still works, but every call then runs as that key's user (typically an
+> admin).
 
 ### System Prompt
 
@@ -123,6 +141,61 @@ Open-WebUI Notes Sync:
 - Check NotesSyncStatus to see if a sync is in progress.
 ```
 
+## Per-user identity
+
+With **Session** authentication, Open-WebUI forwards the *calling user's*
+JWT to this server on every tool call. The companion validates that token
+against the Open-WebUI backend (`GET /users/user/info` — the validation
+authority; result cached for `OWUI_TOKEN_CACHE_TTL` seconds), reads the
+user's authoritative attributes from `GET /users/user/status`, and then
+makes all Open-WebUI API calls *as that user* — so `ContextSearch` and
+`ContextCompact` are strictly scoped to the caller's own chats.
+
+The chat-data endpoints are **fail-closed**: a request without a valid
+forwarded user token gets a **401** — there is no silent fallback to the
+static `OWUI_TOKEN` (which would let anyone with network access read
+chats as the admin). Only the diagnostic `ContextHealth` endpoint may use
+the static token; with `OWUI_ALLOW_USER_TOKEN=false` (explicit legacy
+mode) everything runs as the static token. Plain `X-OpenWebUI-User-*`
+headers are never trusted for auth; when a shared secret is configured,
+the signed `X-OpenWebUI-User-Jwt` is verified as a cross-check.
+
+| Caller | Chat-data endpoints | `ContextHealth` |
+| --- | --- | --- |
+| OWUI tool call (Session auth) | calling user's validated JWT | same |
+| OWUI tool call (Bearer + admin key, legacy mode) | that key's user | same |
+| Direct call with a user's JWT | that user | same |
+| Direct call, no auth | **401** | static `OWUI_TOKEN` |
+| Presented token rejected by OWUI | **401** (never a silent static fallback) | `ConfigError` if the static token is also invalid |
+
+### Optional: signed identity + current chat (OWUI side)
+
+On the Open-WebUI backend (env / admin settings), you can additionally set:
+
+- `ENABLE_FORWARD_USER_INFO_HEADERS=true` — OWUI then sends
+  `X-OpenWebUI-Chat-Id` (the current chat) with every tool call. **This
+  lets the model omit `chat_id` from `ContextUsage` and `ContextCompact`
+  — the current chat is used automatically.** `ContextSearch` is
+  intentionally unaffected: an omitted `chat_id` there means a
+  cross-chat search.
+- `FORWARD_USER_INFO_HEADER_JWT_SECRET` — when set, OWUI signs the
+  forwarded identity into `X-OpenWebUI-User-Jwt` (HS256, ~5 min TTL).
+  Set the companion's `OWUI_FORWARD_JWT_SECRET` to the **same value** to
+  enable the signed cross-check. The check is **fail-closed**: once the
+  secret is configured, a forwarded-token request *must* carry a valid
+  header, and **either** its `sub` matching the token's user id **or**
+  its `email` matching the token's email is accepted (no claim match →
+  **401**). A missing, expired, or forged header is a **401** — so
+  stripping the header never skips the check.
+
+### Removed: admin-only config endpoints
+
+`GET`/`POST /context/config` were removed: they read the caller's role
+from the user-editable `user.info` dict and 403'd for *every* user
+(including admins) against the v0.12.3 contract. Global compaction
+configuration (`context_messages`/`context_tokens` defaults) stays in
+Open-WebUI's admin settings, not in the per-user tool surface.
+
 ## API Documentation
 
 Once running, visit:
@@ -141,6 +214,13 @@ Once running, visit:
 | `PORT` | Server port | `8090` |
 | `LOG_LEVEL` | Logging level | `info` |
 | `EVIDENCE_DIR` | Directory for evidence storage | `/data` |
+| `OWUI_INSTANCE_URL` | Open-WebUI instance URL (e.g. `http://localhost:8080`) | (required for OWUI tools) |
+| `OWUI_TOKEN` | Static Open-WebUI token (admin/API key) — fallback for `ContextHealth` and legacy mode only | (required for notes sync) |
+| `OWUI_ALLOW_USER_TOKEN` | Accept the forwarded user JWT (Session auth) as the acting identity | `true` |
+| `OWUI_TOKEN_CACHE_TTL` | Validation cache TTL (seconds) for forwarded/user tokens | `300` |
+| `OWUI_FORWARD_JWT_SECRET` | Shared secret to verify the signed `X-OpenWebUI-User-Jwt` header (empty = cross-check off) | (empty) |
+| `NOTES_SYNC_KB_ID` | Knowledge Base ID to sync notes into (notes sync runs with `OWUI_TOKEN`) | (empty) |
+| `NOTES_SYNC_INTERVAL` | Automatic notes sync interval in seconds (`0` = disabled) | `300` |
 
 ## Data Persistence
 
@@ -151,6 +231,19 @@ Evidence data is stored in a JSON file (`evidence.json`) in the `/data` director
 - **CORS**: The server allows all origins by default. Restrict this in production.
 - **Gitea Token**: Store your Gitea token securely in the `.env` file.
 - **Authentication**: Consider adding authentication if exposing the server publicly.
+- **Default deployment exposure**: the server is usually published on
+  port 8090, and Open-WebUI's `ENABLE_ADMIN_CHAT_ACCESS` defaults to
+  true. The chat-data endpoints therefore require a valid forwarded OWUI
+  **user** token (fail-closed 401 without one), but `ContextHealth`
+  still reports identity details using the static `OWUI_TOKEN` when no
+  token is forwarded. If the port is reachable beyond your trusted
+  network, restrict it (firewall / reverse proxy) or set
+  `OWUI_ALLOW_USER_TOKEN=false` and protect the static token tightly —
+  it grants access to its owner's chats through this server. `ContextHealth`
+  is unauthenticated: it validates the static token when no token is
+  forwarded, but the resolved static identity is **redacted** in the
+  response (`{"source": "static", "redacted": true}`) so no
+  email/role/user_id is leaked.
 
 ## Development
 
@@ -164,6 +257,8 @@ openwebui-companion-server/
 │   ├── config.py        # Configuration management
 │   ├── errors.py        # Error handling
 │   ├── logging.py       # Logging configuration
+│   ├── context.py       # Open-WebUI context compaction + recall endpoints
+│   ├── identity.py      # Per-user identity resolution (forwarded JWT + static fallback)
 │   ├── evidence.py      # Evidence endpoints
 │   ├── gitea.py         # Gitea endpoints
 │   ├── notes_sync.py    # Open-WebUI notes sync endpoints

@@ -1221,7 +1221,7 @@ async def get_pipeline_output(
                             log_sections.append(
                                 log_content.text[:50000]
                             )  # Limit log size
-                    except Exception as e:
+                    except httpx.HTTPError as e:
                         log_sections.append(f"[Could not fetch logs: {e}]")
                 else:
                     log_sections.append(str(log_response))

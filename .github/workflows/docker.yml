@@ -26,15 +26,19 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check app/
+        run: ruff check app/ tests/
+
+      - name: Check formatting with ruff
+        run: ruff format --check app/ tests/
+
+      - name: Run tests
+        run: python -m pytest -q
 
       - name: Validate syntax
-        run: python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('app/*.py')]"
+        run: python -c "import ast, glob; [ast.parse(open(f).read()) for f in glob.glob('app/*.py') + glob.glob('tests/*.py')]"
 
   publish:
     needs: [test]

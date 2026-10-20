@@ -6,8 +6,7 @@ Evidence is stored in a JSON file and can be filtered by tags.
 
 import json
 import os
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -34,7 +33,7 @@ def _load_evidence() -> list:
         return []
 
     try:
-        with open(settings.EVIDENCE_FILE, "r") as f:
+        with open(settings.EVIDENCE_FILE) as f:
             return json.load(f)
     except json.JSONDecodeError as e:
         logger.error("Failed to parse evidence file", error=str(e))
@@ -52,7 +51,9 @@ def _save_evidence(data: list) -> None:
             json.dump(data, f, indent=2)
     except OSError as e:
         logger.error("Failed to write evidence file", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to save evidence data")
+        raise HTTPException(
+            status_code=500, detail="Failed to save evidence data"
+        ) from e
 
 
 @router.post("/", summary="Add a new piece of evidence", operation_id="EvidenceAdd")
@@ -71,7 +72,7 @@ async def add_evidence(item: EvidenceItem) -> dict:
         "content": item.content,
         "source": item.source,
         "tags": item.tags,
-        "added_at": datetime.now(timezone.utc).isoformat(),
+        "added_at": datetime.now(UTC).isoformat(),
     }
     data.append(entry)
     _save_evidence(data)
@@ -87,8 +88,8 @@ async def add_evidence(item: EvidenceItem) -> dict:
 
 @router.get("/", summary="List all stored evidence", operation_id="EvidenceList")
 async def list_evidence(
-    tag: Optional[str] = Query(default="", description="Optional tag to filter by"),
-    limit: Optional[int] = Query(
+    tag: str | None = Query(default="", description="Optional tag to filter by"),
+    limit: int | None = Query(
         default=50, ge=1, le=200, description="Maximum items to return"
     ),
 ) -> list:
@@ -136,10 +137,8 @@ async def update_evidence(evidence_id: int, item: EvidenceItem) -> dict:
                 "content": item.content,
                 "source": item.source,
                 "tags": item.tags,
-                "added_at": entry.get(
-                    "added_at", datetime.now(timezone.utc).isoformat()
-                ),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "added_at": entry.get("added_at", datetime.now(UTC).isoformat()),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
             _save_evidence(data)
             logger.info("Evidence updated", evidence_id=evidence_id)

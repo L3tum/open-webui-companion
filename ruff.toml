@@ -1,0 +1,22 @@
+# Lint configuration for the companion server.
+#
+# An explicit rule set keeps the CI gate deterministic across ruff
+# releases (ruff's built-in "default" set has grown over time and once
+# produced a batch of new errors on an unpinned install). ruff itself is
+# pinned in requirements-dev.txt.
+line-length = 88
+target-version = "py312"
+
+[lint]
+select = [
+    "E4", # pyflakes-adjacent pycodestyle errors
+    "E7",
+    "E9",
+    "F", # pyflakes
+    "W", # pycodestyle warnings
+    "I", # isort
+    "C4", # comprehensions
+    "UP", # pyupgrade
+    "PIE", # pie
+    "B", # flake8-bugbear
+]
