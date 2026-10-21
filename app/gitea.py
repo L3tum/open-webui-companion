@@ -9,6 +9,7 @@ import fnmatch
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -61,7 +62,6 @@ class PRCreate(BaseModel):
     body: str = Field(default="", description="PR description")
     head: str = Field(..., description="Source branch name")
     base: str = Field(..., description="Target branch name")
-    draft: bool = Field(default=False, description="Create as draft PR")
 
 
 class IssueUpdate(BaseModel):
@@ -111,6 +111,16 @@ class PRFileChange(BaseModel):
     changes: int = Field(default=0, description="Total line changes")
     binary: bool = Field(default=False, description="Is a binary file")
     patch: str = Field(default="", description="Unified diff patch")
+
+
+# Maps the companion's review type names to the Gitea/Forgejo API values.
+# Current Gitea (>= 1.24) / Forgejo accept `event` with uppercase values;
+# Gitea <= 1.23 accepted `type` with lowercase values.
+_REVIEW_EVENT_MAP = {
+    "approved": ("APPROVED", "approve"),
+    "changes_requested": ("REQUEST_CHANGES", "request_changes"),
+    "comment": ("COMMENT", "comment"),
+}
 
 
 class ReviewCreate(BaseModel):
@@ -208,8 +218,12 @@ class PipelineOutputResponse(BaseModel):
     )
 
 
-async def _gitea_request(method: str, url: str, **kwargs) -> dict:
-    """Make a request to the Gitea API with error handling."""
+async def _gitea_request(method: str, url: str, **kwargs) -> dict | str:
+    """Make a request to the Gitea API with error handling.
+
+    Returns parsed JSON for JSON endpoints, or the raw text for
+    text endpoints (e.g. ``/pulls/{n}.diff``).
+    """
     settings.require_gitea_config()
 
     kwargs.setdefault("headers", settings.gitea_headers)
@@ -218,7 +232,11 @@ async def _gitea_request(method: str, url: str, **kwargs) -> dict:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(method, url, **kwargs)
             response.raise_for_status()
-            return response.json()
+            try:
+                return response.json()
+            except ValueError:
+                # Text response (e.g. diff/patch endpoints)
+                return response.text
     except httpx.HTTPStatusError as e:
         error_body = e.response.text[:500]
         logger.error(
@@ -588,7 +606,6 @@ async def create_pr(pr: PRCreate) -> dict:
             "body": pr.body,
             "head": pr.head,
             "base": pr.base,
-            "draft": pr.draft,
         },
     )
 
@@ -711,7 +728,7 @@ async def get_pr_diff(
     repo: str,
     index: int,
     style: str = Query(
-        default="unified", description="Diff style: unified, separate, or full"
+        default="unified", description="Diff style: unified (diff) or patch"
     ),
 ) -> str:
     """
@@ -721,19 +738,21 @@ async def get_pr_diff(
     """
     logger.info("Getting PR diff", owner=owner, repo=repo, pr_index=index)
 
+    # Current Gitea/Forgejo only expose /pulls/{index}.{diff|patch} —
+    # the old /pulls/{index}/diff route was removed.
+    extension = "patch" if style == "patch" else "diff"
     response = await _gitea_request(
         "GET",
-        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/diff",
-        params={"style": style},
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}.{extension}",
     )
 
-    # The diff endpoint returns text, not JSON — handle raw response
+    # The diff endpoint returns text, not JSON
     if isinstance(response, str):
-        return response
+        return PlainTextResponse(response)
     # If it came back as a dict (some Gitea versions), try to extract
     if isinstance(response, dict):
-        return response.get("content", response.get("diff", str(response)))
-    return str(response)
+        return PlainTextResponse(response.get("content", response.get("diff", str(response))))
+    return PlainTextResponse(str(response))
 
 
 @router.get(
@@ -777,23 +796,55 @@ async def get_pr_files(
     summary="List PR review comments",
     operation_id="GiteaListPRComments",
 )
-async def list_pr_comments(
-    owner: str,
-    repo: str,
-    index: int,
-    page: int = Query(default=1, ge=1, description="Page number"),
-    limit: int = Query(default=30, ge=1, le=100, description="Items per page"),
-) -> list:
+async def list_pr_comments(owner: str, repo: str, index: int) -> list:
     """
     List review comments on a pull request.
 
-    Returns review/inline comments (distinct from general issue comments).
+    Returns inline code comments (distinct from general issue comments).
+    On current Gitea/Forgejo, comments are grouped per review, so this
+    fetches the review list and then each review's comments.
     """
-    return await _gitea_request(
-        "GET",
-        f"{settings.gitea_api_url}/repos/{owner}/{repo}/pulls/{index}/comments",
-        params={"page": page, "limit": limit},
-    )
+    logger.info("Listing PR review comments", owner=owner, repo=repo, pr_index=index)
+    api = f"{settings.gitea_api_url}/repos/{owner}/{repo}"
+
+    # Current Gitea (>= 1.24) / Forgejo: comments live under /pulls/{n}/reviews/{id}/comments
+    try:
+        reviews = await _gitea_request("GET", f"{api}/pulls/{index}/reviews")
+    except GiteaError as e:
+        if e.status_code != 404:
+            raise
+        # Very old Gitea: fall through to the legacy flat endpoint below
+        reviews = None
+
+    if isinstance(reviews, list):
+        comments = []
+        for review in reviews[:50]:
+            review_id = review.get("id")
+            if not review_id:
+                continue
+            try:
+                review_comments = await _gitea_request(
+                    "GET", f"{api}/pulls/{index}/reviews/{review_id}/comments"
+                )
+            except GiteaError as e:
+                if e.status_code == 404:
+                    continue
+                raise
+            if isinstance(review_comments, list):
+                comments.extend(review_comments)
+        comments.sort(key=lambda c: c.get("id", 0))
+        logger.info(
+            "PR review comments fetched",
+            owner=owner,
+            repo=repo,
+            pr_index=index,
+            reviews=len(reviews),
+            comments=len(comments),
+        )
+        return comments
+
+    # Legacy Gitea (<= 1.23) fallback: flat comments endpoint
+    return await _gitea_request("GET", f"{api}/pulls/{index}/comments")
 
 
 @router.delete(
@@ -849,9 +900,28 @@ async def submit_pr_review(
         review_type=review.type,
     )
 
+    # Gitea >= 1.24 / Forgejo use `event` with uppercase values (APPROVED,
+    # REQUEST_CHANGES, COMMENT); older Gitea (<= 1.23) used `type` with
+    # lowercase values. Send both: each generation reads its own field and
+    # ignores the other. (Sending only `type` on current versions silently
+    # creates a PENDING review that is never posted.)
+    event, legacy_type = _REVIEW_EVENT_MAP.get(review.type, (None, None))
+    if event is None:
+        raise GiteaError(
+            f"Invalid review type '{review.type}'. "
+            "Use 'approved', 'changes_requested', or 'comment'.",
+            status_code=400,
+        )
+    if review.type == "changes_requested" and not review.body.strip():
+        raise GiteaError(
+            "A review body is required when requesting changes.",
+            status_code=400,
+        )
+
     payload = {
+        "event": event,
+        "type": legacy_type,
         "body": review.body,
-        "type": review.type,
     }
     if review.commit_id:
         payload["commit_id"] = review.commit_id
@@ -1042,6 +1112,8 @@ async def get_pr_pipeline(
     logger.info("Looking up pipeline for branch", branch=head_branch)
 
     # List workflow runs, filtered by the PR's head branch and pull_request event.
+    # Gitea filters by `branch`, Forgejo by `ref` — send both so the branch
+    # filter works on either flavor (each server ignores the unknown one).
     # Note: Gitea/Forgejo returns runs sorted by ID ascending (oldest first) by default.
     # We fetch all matching runs and select the latest one (highest ID).
     runs_data = await _gitea_request(
@@ -1049,6 +1121,7 @@ async def get_pr_pipeline(
         f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs",
         params={
             "branch": head_branch,
+            "ref": head_branch,
             "event": "pull_request",
         },
     )
@@ -1077,22 +1150,71 @@ async def get_pr_pipeline(
     # Select the most recent run (highest ID), since the API returns ascending order
     run = max(runs, key=lambda r: r.get("id", 0))
 
-    # Map fields — Gitea/Forgejo Actions API uses slightly different field names
-    # than GitHub Actions. Handle both conventions.
+    # Map fields — Gitea and Forgejo use different field names for workflow
+    # runs (Gitea: display_title/head_branch/head_sha/started_at/updated_at;
+    # Forgejo: title/prettyref/commit_sha/started/updated).
+    display_title = run.get("display_title") or run.get("title") or ""
     return PipelineStatusResponse(
         run_id=run.get("id", 0),
-        run_number=run.get("index_in_repo", run.get("run_number", 0)),
+        run_number=run.get("index_in_repo") or run.get("run_number", 0),
         status=run.get("status", "unknown"),
         conclusion=run.get("conclusion", ""),
-        name=run.get("name", ""),
-        display_title=run.get("display_title", ""),
+        name=run.get("name") or display_title,
+        display_title=display_title,
         event=run.get("event", ""),
-        branch=run.get("head_branch", head_branch),
-        commit_sha=run.get("head_sha", ""),
-        html_url=run.get("html_url", run.get("url", "")),
-        started_at=run.get("started_at", run.get("run_started_at", "")),
-        updated_at=run.get("updated_at", ""),
+        branch=run.get("head_branch") or run.get("prettyref") or head_branch,
+        commit_sha=run.get("head_sha") or run.get("commit_sha", ""),
+        html_url=run.get("html_url") or run.get("url", ""),
+        started_at=run.get("started_at")
+        or run.get("run_started_at")
+        or run.get("started", ""),
+        updated_at=run.get("updated_at") or run.get("updated", ""),
     )
+
+
+async def _fetch_gitea_log_text(url: str) -> str:
+    """Fetch a Gitea log endpoint and return its text content.
+
+    Handles both response shapes: plain text, and a JSON object with a
+    downloadable ``url``. Log size is capped at 50 KB.
+    """
+    response = await _gitea_request("GET", url)
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        log_url = response.get("url", "")
+        if log_url:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                log_content = await client.get(
+                    log_url,
+                    headers=settings.gitea_headers,
+                )
+                log_content.raise_for_status()
+                return log_content.text[:50000]  # Limit log size
+    return str(response)
+
+
+async def _fetch_job_logs(
+    api_url: str, owner: str, repo: str, run_id: int, job_id: int
+) -> str | None:
+    """Fetch logs for a single workflow job.
+
+    Tries both known per-job log routes: the legacy
+    ``/actions/runs/{run_id}/jobs/{job_id}/logs`` and the current
+    Gitea/Forgejo route ``/actions/jobs/{job_id}/logs``.
+    Returns ``None`` if neither route is available on this instance.
+    """
+    candidates = [
+        f"{api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/logs",
+        f"{api_url}/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+    ]
+    for url in candidates:
+        try:
+            return await _fetch_gitea_log_text(url)
+        except GiteaError as e:
+            if e.status_code != 404:
+                raise
+    return None
 
 
 @router.get(
@@ -1136,7 +1258,8 @@ async def get_pipeline_output(
         jobs_list = (
             jobs_data
             if isinstance(jobs_data, list)
-            else jobs_data.get("workflow_jobs", [])
+            else jobs_data.get("jobs")
+            or jobs_data.get("workflow_jobs", [])
         )
         logger.info("Fetched jobs via /jobs endpoint", count=len(jobs_list))
     except GiteaError as e:
@@ -1148,7 +1271,7 @@ async def get_pipeline_output(
             # Fall back to the tasks endpoint available on older Forgejo.
             # Note: /actions/tasks?run_id=X doesn't filter on some Forgejo versions,
             # so we fetch all tasks and filter client-side by run_number.
-            run_number = run_data.get("index_in_repo")
+            run_number = run_data.get("index_in_repo") or run_data.get("run_number")
             tasks_data = await _gitea_request(
                 "GET",
                 f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/tasks",
@@ -1181,8 +1304,8 @@ async def get_pipeline_output(
             name=job.get("name", ""),
             status=job.get("status", ""),
             conclusion=job.get("conclusion", ""),
-            started_at=job.get("started_at", job.get("run_started_at", "")),
-            url=job.get("url", job.get("html_url", "")),
+            started_at=job.get("started_at") or job.get("run_started_at", ""),
+            url=job.get("url") or job.get("html_url", ""),
         )
         for job in jobs_list
     ]
@@ -1200,81 +1323,72 @@ async def get_pipeline_output(
         log_sections.append(f"Conclusion: {job.get('conclusion', 'N/A')}")
         log_sections.append(f"{'=' * 60}\n")
 
-        try:
-            # Try to fetch job logs via the standard endpoint
-            log_response = await _gitea_request(
-                "GET",
-                f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/logs",
+        log_text = await _fetch_job_logs(
+            settings.gitea_api_url, owner, repo, run_id, job_id
+        )
+        if log_text is not None:
+            log_sections.append(log_text)
+        else:
+            # Per-job logs endpoint not available on this instance
+            logs_available = False
+            job_url = job.get("url") or job.get("html_url", "")
+            if job_url:
+                log_sections.append(
+                    f"[Logs not available via API. View in browser: {job_url}]"
+                )
+            else:
+                log_sections.append(
+                    f"[Logs not available via API for job {job_id}]"
+                )
+            logger.info(
+                "Logs endpoint not available for job",
+                owner=owner,
+                repo=repo,
+                run_id=run_id,
+                job_id=job_id,
             )
-            # The logs endpoint may return text directly or a dict with a URL
-            if isinstance(log_response, str):
-                log_sections.append(log_response)
-            elif isinstance(log_response, dict):
-                log_url = log_response.get("url", "")
-                if log_url:
-                    log_sections.append(f"Logs URL: {log_url}")
-                    try:
-                        async with httpx.AsyncClient(timeout=30.0) as client:
-                            log_content = await client.get(
-                                log_url,
-                                headers=settings.gitea_headers,
-                            )
-                            log_content.raise_for_status()
-                            log_sections.append(
-                                log_content.text[:50000]
-                            )  # Limit log size
-                    except httpx.HTTPError as e:
-                        log_sections.append(f"[Could not fetch logs: {e}]")
-                else:
-                    log_sections.append(str(log_response))
-            else:
-                log_sections.append(str(log_response))
-        except GiteaError as e:
-            if e.status_code == 404:
-                # Logs endpoint not available on this Forgejo version
-                logs_available = False
-                job_url = job.get("url", job.get("html_url", ""))
-                if job_url:
-                    log_sections.append(
-                        f"[Logs not available via API. View in browser: {job_url}]"
-                    )
-                else:
-                    log_sections.append(
-                        f"[Logs not available via API for job {job_id}]"
-                    )
-                logger.info(
-                    "Logs endpoint not available for job",
-                    owner=owner,
-                    repo=repo,
-                    run_id=run_id,
-                    job_id=job_id,
-                )
-            else:
-                log_sections.append(f"[Failed to fetch logs for job {job_id}: {e}]")
-                logger.warning(
-                    "Failed to fetch job logs",
-                    owner=owner,
-                    repo=repo,
-                    run_id=run_id,
-                    job_id=job_id,
-                    error=str(e),
-                )
 
     combined_logs = "\n".join(log_sections)
 
-    # If no logs were available, add a helpful note
     if not logs_available and jobs_list:
-        combined_logs = (
-            "Note: Individual job logs are not available via the API on this Gitea/Forgejo instance.\n"
-            "Job statuses and URLs are provided below. Use the URLs to view logs in the web UI.\n\n"
-            + combined_logs
-        )
+        # Last resort: current Gitea/Forgejo expose run-level logs.
+        try:
+            run_logs = await _fetch_gitea_log_text(
+                f"{settings.gitea_api_url}/repos/{owner}/{repo}/actions/runs/{run_id}/logs"
+            )
+        except GiteaError as e:
+            if e.status_code == 404:
+                run_logs = None
+            else:
+                raise
+        if run_logs:
+            log_sections.insert(
+                0,
+                "\n".join(
+                    [
+                        "=" * 60,
+                        "Run-level logs (per-job logs unavailable on this instance)",
+                        "=" * 60,
+                        run_logs,
+                    ]
+                ),
+            )
+            combined_logs = "\n".join(log_sections)
+            logs_available = True
+        else:
+            combined_logs = (
+                "Note: Individual job logs are not available via the API on this Gitea/Forgejo instance.\n"
+                "Job statuses and URLs are provided below. Use the URLs to view logs in the web UI.\n\n"
+                + combined_logs
+            )
 
     return PipelineOutputResponse(
         run_id=run_data.get("id", run_id),
         status=run_data.get("status", "unknown"),
         conclusion=run_data.get("conclusion", ""),
-        name=run_data.get("name", ""),
+        name=run_data.get("name")
+        or run_data.get("title")
+        or run_data.get("display_title", ""),
         jobs=jobs,
         logs=combined_logs,
     )
