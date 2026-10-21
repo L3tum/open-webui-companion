@@ -949,7 +949,9 @@ async def gitea_health() -> dict:
         return {"status": "error", "message": "Gitea is not configured"}
 
     try:
-        response = await _gitea_request("GET", f"{settings.gitea_api_url}/user/info")
+        # GET /user is the Gitea "get the authenticated user" endpoint;
+        # there is no /user/info (it 404s on every Gitea version).
+        response = await _gitea_request("GET", f"{settings.gitea_api_url}/user")
         return {
             "status": "ok",
             "username": response.get("login", "unknown"),

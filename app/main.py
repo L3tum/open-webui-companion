@@ -3,7 +3,6 @@
 This server provides tools for Open-WebUI including:
 - Evidence management: Store and retrieve facts to reduce hallucinations
 - Gitea integration: Repository management, file operations, issues, PRs, and comments
-- Notes sync: Sync Open-WebUI notes into a Knowledge Base for RAG indexing
 - Context recall: Per-chat context inspection/compaction and full-history
   search, scoped to the validated calling user (per-user identity)
 """
@@ -20,8 +19,6 @@ from app.errors import add_error_handlers
 from app.evidence import router as evidence_router
 from app.gitea import router as gitea_router
 from app.logging import get_logger, setup_logging
-from app.notes_sync import router as notes_sync_router
-from app.scheduler import setup_scheduler, shutdown_scheduler
 
 # Setup structured logging first
 setup_logging(level=settings.LOG_LEVEL, structured=settings.LOG_STRUCTURED)
@@ -42,17 +39,12 @@ async def lifespan(app: FastAPI):
     )
 
     # Shared HTTP client for Open-WebUI API calls (connection pooling).
-    # Endpoints use it via request.app.state; background jobs fall back
-    # to per-call clients.
+    # Endpoints use it via request.app.state; code paths without a
+    # Request (tests, background jobs) fall back to per-call clients.
     app.state.owui_client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
-
-    # Start background scheduler
-    setup_scheduler()
 
     yield
 
-    # Shutdown
-    shutdown_scheduler()
     await app.state.owui_client.aclose()
     logger.info("Shutting down Open-WebUI Companion Server")
 
@@ -94,11 +86,6 @@ A companion server for Open-WebUI that provides persistent tools for:
 - **GiteaGetPipelineOutput**: Get full pipeline logs for a workflow run
 - **GiteaHealth**: Check Gitea connection
 
-## Notes Sync
-- **NotesSyncTrigger**: Manually sync notes to a Knowledge Base
-- **NotesSyncStatus**: Get sync status
-- **NotesSyncHealth**: Check Open-WebUI connection
-
 ## Context Recall
 - **ContextUsage**: Get context usage for a chat (server-computed
   context window)
@@ -110,7 +97,7 @@ A companion server for Open-WebUI that provides persistent tools for:
 ## System Prompt Recommendations
 Add this to your Open-WebUI model's system prompt:
 
-> You have access to evidence management, Gitea tools, notes sync, and context recall.
+> You have access to evidence management, Gitea tools, and context recall.
 > - Before answering factual questions, check EvidenceList for stored evidence.
 > - When the user provides facts or sources, use EvidenceAdd to store them.
 > - Use Gitea tools to create repos, edit files, create PRs, and comment on issues/PRs.
@@ -118,7 +105,6 @@ Add this to your Open-WebUI model's system prompt:
 > - If a pipeline fails, use GiteaGetPipelineOutput to fetch the
 >   logs and diagnose the issue.
 > - Always confirm with the user before making changes on Gitea.
-> - Use NotesSyncTrigger to sync your notes into RAG when needed.
 > - Use ContextUsage to check how full a chat's context window is before summarizing.
 > - Use ContextCompact to compact a full chat (non-destructive: the stored
 >   history stays searchable); dropped detail can be recalled with
@@ -146,7 +132,6 @@ add_error_handlers(app)
 app.include_router(context_router)
 app.include_router(evidence_router)
 app.include_router(gitea_router)
-app.include_router(notes_sync_router)
 
 
 @app.get("/health", tags=["system"])

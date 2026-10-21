@@ -5,7 +5,7 @@
 I had some bigger goals with this but decided to switch away and build something else. As such the functionality here is basically the same as Forgejo-MCP or Gitea-MCP projects.
 
 
-A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management, Gitea integration, and Open-WebUI notes synchronization.
+A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management, Gitea integration, and chat context inspection, compaction, and recall.
 
 ## Features
 
@@ -43,17 +43,11 @@ A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/
 - **GiteaGetToken**: Get the configured Gitea API token
 - **GiteaHealth**: Check Gitea connection
 
-### Open-WebUI Notes Sync
-- **NotesSyncTrigger**: Manually trigger a sync of Open-WebUI notes into a Knowledge Base
-- **NotesSyncStatus**: Get the current status of the notes sync
-- **NotesSyncHealth**: Check if Open-WebUI is configured and accessible
-- **NotesSyncDebug**: Test all known notes API endpoints and return raw responses
-
 ### Context Compaction
 Inspect a chat's model context, manually compact it, and *recall* dropped
 detail by searching the full un-compacted history (within one chat or
-across all chats). Uses the same OWUI_INSTANCE_URL / OWUI_TOKEN as notes
-sync; chat-data calls act as the validated calling user (see
+across all chats). Uses OWUI_INSTANCE_URL / OWUI_TOKEN; chat-data calls
+act as the validated calling user (see
 [Per-user identity](#per-user-identity)).
 - **ContextUsage**: Inspect a chat's model context window usage
 - **ContextCompact**: Manually compact a chat's context
@@ -123,7 +117,7 @@ The tools will now be available to any model that supports function calling.
 Add this to your model's system prompt for best results:
 
 ```
-You have access to evidence management, Gitea, and Open-WebUI notes sync tools.
+You have access to evidence management and Gitea tools.
 
 Evidence Management:
 - Before answering factual questions, check EvidenceList for stored evidence.
@@ -135,10 +129,6 @@ Gitea Integration:
 - Always confirm with the user before making changes on Gitea.
 - Use GiteaCreateFile to scaffold new projects or update existing code.
 - Check pipeline status with GiteaGetPRPipeline after creating or updating PRs.
-
-Open-WebUI Notes Sync:
-- Use NotesSyncTrigger to sync user notes into a Knowledge Base.
-- Check NotesSyncStatus to see if a sync is in progress.
 ```
 
 ## Per-user identity
@@ -215,12 +205,10 @@ Once running, visit:
 | `LOG_LEVEL` | Logging level | `info` |
 | `EVIDENCE_DIR` | Directory for evidence storage | `/data` |
 | `OWUI_INSTANCE_URL` | Open-WebUI instance URL (e.g. `http://localhost:8080`) | (required for OWUI tools) |
-| `OWUI_TOKEN` | Static Open-WebUI token (admin/API key) — fallback for `ContextHealth` and legacy mode only | (required for notes sync) |
+| `OWUI_TOKEN` | Static Open-WebUI token (admin/API key) — fallback for `ContextHealth` and legacy mode only | (required for legacy mode) |
 | `OWUI_ALLOW_USER_TOKEN` | Accept the forwarded user JWT (Session auth) as the acting identity | `true` |
 | `OWUI_TOKEN_CACHE_TTL` | Validation cache TTL (seconds) for forwarded/user tokens | `300` |
 | `OWUI_FORWARD_JWT_SECRET` | Shared secret to verify the signed `X-OpenWebUI-User-Jwt` header (empty = cross-check off) | (empty) |
-| `NOTES_SYNC_KB_ID` | Knowledge Base ID to sync notes into (notes sync runs with `OWUI_TOKEN`) | (empty) |
-| `NOTES_SYNC_INTERVAL` | Automatic notes sync interval in seconds (`0` = disabled) | `300` |
 
 ## Data Persistence
 
@@ -261,8 +249,7 @@ openwebui-companion-server/
 │   ├── identity.py      # Per-user identity resolution (forwarded JWT + static fallback)
 │   ├── evidence.py      # Evidence endpoints
 │   ├── gitea.py         # Gitea endpoints
-│   ├── notes_sync.py    # Open-WebUI notes sync endpoints
-│   └── scheduler.py     # Background task scheduler
+│   └── owui.py          # Shared Open-WebUI API client
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt

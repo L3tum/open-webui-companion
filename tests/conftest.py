@@ -275,6 +275,6 @@ def clear_identity_cache():
 @pytest.fixture
 def client(baseline):
     # Deliberately NOT used as a context manager: that would run the app
-    # lifespan per test, and the module-global AsyncIOScheduler cannot be
-    # started on more than one event loop ("Event loop is closed").
+    # lifespan per test. Without it, ``app.state.owui_client`` is absent
+    # and OWUI calls use per-call clients (the path under test).
     return TestClient(app)

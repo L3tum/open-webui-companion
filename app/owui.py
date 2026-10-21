@@ -1,6 +1,6 @@
 """Shared Open-WebUI API client.
 
-One request helper for every router (context, notes-sync), with explicit
+One request helper for the context router, with explicit
 headers: the caller must always pass the ``Authorization`` header for the
 acting identity. There is deliberately **no** implicit fallback to the
 static ``OWUI_TOKEN`` — a fail-closed module must not silently pick a

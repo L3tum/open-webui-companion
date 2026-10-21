@@ -45,10 +45,6 @@ class Settings:
     OWUI_TOKEN_CACHE_TTL: int = _env_int("OWUI_TOKEN_CACHE_TTL", 300)
     OWUI_FORWARD_JWT_SECRET: str = os.getenv("OWUI_FORWARD_JWT_SECRET", "")
 
-    # Notes Sync Configuration
-    NOTES_SYNC_KB_ID: str = os.getenv("NOTES_SYNC_KB_ID", "")
-    NOTES_SYNC_INTERVAL: int = _env_int("NOTES_SYNC_INTERVAL", 300)
-
     # Server Configuration
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = _env_int("PORT", 8090)
@@ -112,10 +108,9 @@ class Settings:
     def has_static_owui_token(self) -> bool:
         """Check whether a static OWUI_TOKEN is configured.
 
-        Endpoints that always act as the static token (notes sync, the
-        scheduler) must use this rather than :meth:`is_owui_configured`
-        (which is true as soon as a URL exists, even with zero
-        credentials).
+        Endpoints that always act as the static token must use this
+        rather than :meth:`is_owui_configured` (which is true as soon as
+        a URL exists, even with zero credentials).
         """
         return bool(self.OWUI_TOKEN)
 
