@@ -255,7 +255,6 @@ def baseline(monkeypatch):
     monkeypatch.setenv("OWUI_INSTANCE_URL", OWUI_BASE)
     monkeypatch.setenv("OWUI_ALLOW_USER_TOKEN", "true")
     monkeypatch.setenv("OWUI_FORWARD_JWT_SECRET", "")
-    monkeypatch.setenv("EVIDENCE_DIR", "evidence")
     settings.OWUI_INSTANCE_URL = OWUI_BASE
     settings.OWUI_TOKEN = ""
     settings.OWUI_ALLOW_USER_TOKEN = True

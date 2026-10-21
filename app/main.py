@@ -1,7 +1,6 @@
 """Main FastAPI application for the Open-WebUI companion server.
 
 This server provides tools for Open-WebUI including:
-- Evidence management: Store and retrieve facts to reduce hallucinations
 - Gitea integration: Repository management, file operations, issues, PRs, and comments
 - Context recall: Per-chat context inspection/compaction and full-history
   search, scoped to the validated calling user (per-user identity)
@@ -16,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.context import router as context_router
 from app.errors import add_error_handlers
-from app.evidence import router as evidence_router
 from app.gitea import router as gitea_router
 from app.logging import get_logger, setup_logging
 
@@ -55,14 +53,6 @@ app = FastAPI(
     description="""
 A companion server for Open-WebUI that provides persistent tools for:
 
-## Evidence Management
-- **EvidenceAdd**: Store verified facts, sources, or findings
-- **EvidenceList**: Retrieve stored evidence (with optional tag filtering)
-- **EvidenceGet**: Get a specific evidence item by ID
-- **EvidenceUpdate**: Update an existing evidence item
-- **EvidenceDelete**: Delete an evidence item
-- **EvidenceClear**: Clear all evidence (use with caution)
-
 ## Gitea Integration
 - **GiteaCreateRepo**: Create a new repository
 - **GiteaListRepos**: List your repositories
@@ -97,9 +87,7 @@ A companion server for Open-WebUI that provides persistent tools for:
 ## System Prompt Recommendations
 Add this to your Open-WebUI model's system prompt:
 
-> You have access to evidence management, Gitea tools, and context recall.
-> - Before answering factual questions, check EvidenceList for stored evidence.
-> - When the user provides facts or sources, use EvidenceAdd to store them.
+> You have access to Gitea tools and context recall.
 > - Use Gitea tools to create repos, edit files, create PRs, and comment on issues/PRs.
 > - After creating or modifying a PR, use GiteaGetPRPipeline to check if CI passed.
 > - If a pipeline fails, use GiteaGetPipelineOutput to fetch the
@@ -130,7 +118,6 @@ add_error_handlers(app)
 
 # Include routers
 app.include_router(context_router)
-app.include_router(evidence_router)
 app.include_router(gitea_router)
 
 

@@ -93,9 +93,6 @@ class FileListResponse(BaseModel):
 class CommentCreate(BaseModel):
     """Schema for creating a comment on an issue or PR."""
 
-    owner: str = Field(..., description="Repository owner")
-    repo: str = Field(..., description="Repository name")
-    issue_index: int = Field(..., description="Issue or PR index number")
     body: str = Field(..., description="Comment text")
 
 
@@ -126,8 +123,6 @@ _REVIEW_EVENT_MAP = {
 class ReviewCreate(BaseModel):
     """Schema for submitting a PR review."""
 
-    owner: str = Field(..., description="Repository owner")
-    repo: str = Field(..., description="Repository name")
     body: str = Field(default="", description="Review comment text")
     type: str = Field(
         ..., description="Review type: approved, changes_requested, comment"

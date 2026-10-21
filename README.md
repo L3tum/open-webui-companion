@@ -5,17 +5,9 @@
 I had some bigger goals with this but decided to switch away and build something else. As such the functionality here is basically the same as Forgejo-MCP or Gitea-MCP projects.
 
 
-A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for evidence management, Gitea integration, and chat context inspection, compaction, and recall.
+A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for Gitea integration and chat context inspection, compaction, and recall.
 
 ## Features
-
-### Evidence Management
-- **EvidenceAdd**: Store verified facts, sources, or findings
-- **EvidenceList**: Retrieve stored evidence with optional tag filtering
-- **EvidenceGet**: Get a specific evidence item by ID
-- **EvidenceUpdate**: Update an existing evidence item
-- **EvidenceDelete**: Delete an evidence item
-- **EvidenceClear**: Clear all evidence (use with caution)
 
 ### Gitea Integration
 - **GiteaCreateRepo**: Create a new repository
@@ -117,12 +109,7 @@ The tools will now be available to any model that supports function calling.
 Add this to your model's system prompt for best results:
 
 ```
-You have access to evidence management and Gitea tools.
-
-Evidence Management:
-- Before answering factual questions, check EvidenceList for stored evidence.
-- When the user provides facts, sources, or findings they want remembered, use EvidenceAdd to store them with relevant tags.
-- Evidence persists across conversations to reduce hallucinations.
+You have access to Gitea tools.
 
 Gitea Integration:
 - Use Gitea tools to create repositories, edit files, manage issues, and review pull requests.
@@ -203,16 +190,11 @@ Once running, visit:
 | `HOST` | Server host | `0.0.0.0` |
 | `PORT` | Server port | `8090` |
 | `LOG_LEVEL` | Logging level | `info` |
-| `EVIDENCE_DIR` | Directory for evidence storage | `/data` |
 | `OWUI_INSTANCE_URL` | Open-WebUI instance URL (e.g. `http://localhost:8080`) | (required for OWUI tools) |
 | `OWUI_TOKEN` | Static Open-WebUI token (admin/API key) — fallback for `ContextHealth` and legacy mode only | (required for legacy mode) |
 | `OWUI_ALLOW_USER_TOKEN` | Accept the forwarded user JWT (Session auth) as the acting identity | `true` |
 | `OWUI_TOKEN_CACHE_TTL` | Validation cache TTL (seconds) for forwarded/user tokens | `300` |
 | `OWUI_FORWARD_JWT_SECRET` | Shared secret to verify the signed `X-OpenWebUI-User-Jwt` header (empty = cross-check off) | (empty) |
-
-## Data Persistence
-
-Evidence data is stored in a JSON file (`evidence.json`) in the `/data` directory. When using Docker, this is mounted as a volume for persistence.
 
 ## Security Notes
 
@@ -247,7 +229,6 @@ openwebui-companion-server/
 │   ├── logging.py       # Logging configuration
 │   ├── context.py       # Open-WebUI context compaction + recall endpoints
 │   ├── identity.py      # Per-user identity resolution (forwarded JWT + static fallback)
-│   ├── evidence.py      # Evidence endpoints
 │   ├── gitea.py         # Gitea endpoints
 │   └── owui.py          # Shared Open-WebUI API client
 ├── Dockerfile

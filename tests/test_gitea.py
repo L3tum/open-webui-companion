@@ -154,7 +154,7 @@ def test_pr_review_sends_event_and_legacy_type(client, gitea_env):
         rx.post(f"{GITEA_API}/repos/o/r/pulls/5/reviews").mock(side_effect=_post)
         resp = client.post(
             "/gitea/pulls/o/r/5/reviews",
-            json={"owner": "o", "repo": "r", "body": "lgtm", "type": "approved"},
+            json={"body": "lgtm", "type": "approved"},
         )
     assert resp.status_code == 200
     payload = _json.loads(captured["body"])
@@ -183,8 +183,6 @@ def test_pr_review_type_mapping(client, gitea_env, review_type, event, legacy):
     with respx.mock(assert_all_called=False) as rx:
         rx.post(f"{GITEA_API}/repos/o/r/pulls/5/reviews").mock(side_effect=_post)
         payload = {
-            "owner": "o",
-            "repo": "r",
             "body": "some body",
             "type": review_type,
         }
@@ -205,7 +203,7 @@ def test_pr_review_request_changes_requires_body(client, gitea_env):
         )
         resp = client.post(
             "/gitea/pulls/o/r/5/reviews",
-            json={"owner": "o", "repo": "r", "body": "", "type": "changes_requested"},
+            json={"body": "", "type": "changes_requested"},
         )
     assert resp.status_code == 400
     assert "body" in resp.json()["detail"].lower()

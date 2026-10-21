@@ -6,9 +6,6 @@ services:
     container_name: openwebui-companion
     ports:
       - "8090:8090"
-    volumes:
-      # Persist evidence data
-      - evidence-data:/data
     env_file:
       - .env
     restart: unless-stopped
@@ -17,6 +14,3 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-volumes:
-  evidence-data:

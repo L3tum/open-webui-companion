@@ -51,10 +51,6 @@ class Settings:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
     LOG_STRUCTURED: bool = os.getenv("LOG_STRUCTURED", "true").lower() == "true"
 
-    # Evidence Configuration
-    EVIDENCE_DIR: str = os.getenv("EVIDENCE_DIR", "/data")
-    EVIDENCE_FILE: str = os.path.join(EVIDENCE_DIR, "evidence.json")
-
     @property
     def gitea_api_url(self) -> str:
         """Get the Gitea API base URL."""
