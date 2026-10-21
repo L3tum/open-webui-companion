@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from app.config import settings
+from app.gitea import SEARCH_MAX_PAGES, SEARCH_PAGE_SIZE
 
 GITEA_BASE = "https://gitea.test"
 GITEA_API = f"{GITEA_BASE}/api/v1"
@@ -96,9 +97,7 @@ def test_pr_comments_fetched_via_reviews(client, gitea_env):
     """
     with respx.mock(assert_all_called=False) as rx:
         rx.get(f"{GITEA_API}/repos/o/r/pulls/5/reviews").mock(
-            return_value=httpx.Response(
-                200, json=[{"id": 1}, {"id": 2}]
-            )
+            return_value=httpx.Response(200, json=[{"id": 1}, {"id": 2}])
         )
         rx.get(f"{GITEA_API}/repos/o/r/pulls/5/reviews/1/comments").mock(
             return_value=httpx.Response(
@@ -277,7 +276,12 @@ def test_pipeline_output_gitea29_jobs_and_job_logs(client, gitea_env):
         rx.get(f"{GITEA_API}/repos/o/r/actions/runs/9").mock(
             return_value=httpx.Response(
                 200,
-                json={"id": 9, "status": "completed", "conclusion": "success", "display_title": "CI"},
+                json={
+                    "id": 9,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "display_title": "CI",
+                },
             )
         )
         # Gitea 29 shape: wrapper with `jobs` key
@@ -306,7 +310,9 @@ def test_pipeline_output_gitea29_jobs_and_job_logs(client, gitea_env):
         # current per-job logs route -> text
         rx.get(f"{GITEA_API}/repos/o/r/actions/jobs/11/logs").mock(
             return_value=httpx.Response(
-                200, content=b"step 1 ok\nstep 2 ok\n", headers={"Content-Type": "text/plain"}
+                200,
+                content=b"step 1 ok\nstep 2 ok\n",
+                headers={"Content-Type": "text/plain"},
             )
         )
         resp = client.get("/gitea/actions/runs/o/r/9/logs")
@@ -328,7 +334,11 @@ def test_pipeline_output_run_level_logs_fallback(client, gitea_env):
         )
         rx.get(f"{GITEA_API}/repos/o/r/actions/runs/9/jobs").mock(
             return_value=httpx.Response(
-                200, json={"total_count": 1, "jobs": [{"id": 11, "name": "build", "status": "failure"}]}
+                200,
+                json={
+                    "total_count": 1,
+                    "jobs": [{"id": 11, "name": "build", "status": "failure"}],
+                },
             )
         )
         rx.get(f"{GITEA_API}/repos/o/r/actions/runs/9/jobs/11/logs").mock(
@@ -339,9 +349,227 @@ def test_pipeline_output_run_level_logs_fallback(client, gitea_env):
         )
         rx.get(f"{GITEA_API}/repos/o/r/actions/runs/9/logs").mock(
             return_value=httpx.Response(
-                200, content=b"run level log line\n", headers={"Content-Type": "text/plain"}
+                200,
+                content=b"run level log line\n",
+                headers={"Content-Type": "text/plain"},
             )
         )
         resp = client.get("/gitea/actions/runs/o/r/9/logs")
     assert resp.status_code == 200
     assert "run level log line" in resp.json()["logs"]
+
+
+# ─── Instance-wide repo search (GiteaSearchRepos) ──────────────────────────
+
+
+def _repo(full_name, *, description="", private=False):
+    """Minimal Gitea repository JSON as returned by /api/v1/repos/search."""
+    owner, _, name = full_name.partition("/")
+    return {
+        "full_name": full_name,
+        "name": name,
+        "owner": {"login": owner},
+        "description": description,
+        "html_url": f"{GITEA_BASE}/{full_name}",
+        "clone_url": f"{GITEA_BASE}/{full_name}.git",
+        "private": private,
+        "default_branch": "main",
+        "size": 12,
+        "updated_at": "2024-05-01T00:00:00Z",
+    }
+
+
+def test_search_repos_walks_pages_until_last(client, gitea_env):
+    """GiteaSearchRepos walks every page of /repos/search (full pages
+    only trigger the next request) and returns case-insensitive name
+    matches. Gitea wraps search results in {"ok": true, "data": [...]}.
+    """
+    # A full first page (Gitea's max page size) is required for the walk
+    # to continue; the short second page ends it.
+    page1 = [_repo(f"user{i:02d}/repo{i}") for i in range(50)]
+    page1[7] = _repo("alice/alpha")
+    page2 = [_repo("dave/alpha-two"), _repo("erin/zzz")]
+    pages = {"1": page1, "2": page2}
+    pages_seen = []
+
+    def _search(request):
+        params = request.url.params
+        pages_seen.append(params["page"])
+        assert params["limit"] == "50"
+        assert request.headers.get("authorization") == "token test-gitea-token"
+        return httpx.Response(200, json={"ok": True, "data": pages[params["page"]]})
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get("/gitea/repos/search", params={"q": "alpha"})
+
+    assert pages_seen == ["1", "2"]
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["query"] == "alpha"
+    assert body["repos_scanned"] == 52
+    assert body["truncated"] is False
+    assert [r["full_name"] for r in body["results"]] == [
+        "alice/alpha",
+        "dave/alpha-two",
+    ]
+    first = body["results"][0]
+    assert first["matched_in"] == ["name"]
+    assert first["clone_url"] == f"{GITEA_BASE}/alice/alpha.git"
+    assert "2 of 52" in body["message"]
+
+
+def test_search_repos_matches_name_owner_description_case_insensitive(
+    client, gitea_env
+):
+    repos = [
+        _repo("carol/alpha-prime"),
+        _repo("alphabetic/beta"),
+        _repo("bob/gamma", description="The ALPHA project"),
+        _repo("dave/delta"),
+    ]
+
+    def _search(request):
+        return httpx.Response(200, json={"ok": True, "data": repos})
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get("/gitea/repos/search", params={"q": "alpha"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    by_name = {r["full_name"]: r for r in body["results"]}
+    assert set(by_name) == {
+        "carol/alpha-prime",
+        "alphabetic/beta",
+        "bob/gamma",
+    }
+    assert by_name["carol/alpha-prime"]["matched_in"] == ["name"]
+    assert by_name["alphabetic/beta"]["matched_in"] == ["owner"]
+    assert by_name["bob/gamma"]["matched_in"] == ["description"]
+    assert body["repos_scanned"] == 4
+
+
+def test_search_repos_stops_at_max_results(client, gitea_env):
+    """Once max_results matches are found, no further pages are fetched."""
+    pages_seen = []
+
+    def _search(request):
+        page = int(request.url.params["page"])
+        pages_seen.append(page)
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "data": [
+                    _repo(f"user/match-{i}") for i in range(page * 10, page * 10 + 50)
+                ],
+            },
+        )
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get(
+            "/gitea/repos/search", params={"q": "match", "max_results": 5}
+        )
+
+    assert pages_seen == [1]
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["results"]) == 5
+    assert body["repos_scanned"] == 5
+    assert "First 5 matches" in body["message"]
+
+
+def test_search_repos_no_matches(client, gitea_env):
+    def _search(request):
+        return httpx.Response(200, json={"ok": True, "data": [_repo("alice/nothing")]})
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get("/gitea/repos/search", params={"q": "zzz"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"] == []
+    assert body["repos_scanned"] == 1
+    assert "No repositories matching 'zzz'" in body["message"]
+
+
+def test_search_repos_tolerates_bare_list(client, gitea_env):
+    """Older Gitea versions may return a bare list instead of the
+    {"ok": true, "data": [...]} wrapper."""
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(
+            return_value=httpx.Response(200, json=[_repo("alice/alpha")])
+        )
+        resp = client.get("/gitea/repos/search", params={"q": "alpha"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [r["full_name"] for r in body["results"]] == ["alice/alpha"]
+
+
+def test_search_repos_rejects_blank_q(client, gitea_env):
+    resp = client.get("/gitea/repos/search", params={"q": "   "})
+    assert resp.status_code == 400
+
+
+def test_search_repos_requires_q(client, gitea_env):
+    resp = client.get("/gitea/repos/search")
+    assert resp.status_code == 422
+
+
+def test_search_repos_page_cap_sets_truncated(client, gitea_env):
+    """The walk is capped at SEARCH_MAX_PAGES; truncated flags the cap and
+    no page beyond the cap is ever requested."""
+
+    def _search(request):
+        page = int(request.url.params["page"])
+        assert page <= SEARCH_MAX_PAGES
+        # Full pages that never match, forcing the walk to the cap.
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "data": [
+                    _repo(f"user{i:04d}/repo{i}") for i in range(SEARCH_PAGE_SIZE)
+                ],
+            },
+        )
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get("/gitea/repos/search", params={"q": "zzz"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["truncated"] is True
+    assert body["repos_scanned"] == SEARCH_MAX_PAGES * SEARCH_PAGE_SIZE
+    assert body["results"] == []
+    assert "page cap" in body["message"]
+
+
+def test_search_repos_propagates_api_error_mid_walk(client, gitea_env):
+    """A Gitea error on any page fails the whole search — no partial results."""
+
+    def _search(request):
+        page = int(request.url.params["page"])
+        if page == 3:
+            return httpx.Response(500, json={"message": "boom"})
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "data": [
+                    _repo(f"user{i:02d}/repo{i}") for i in range(SEARCH_PAGE_SIZE)
+                ],
+            },
+        )
+
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/search").mock(side_effect=_search)
+        resp = client.get("/gitea/repos/search", params={"q": "zzz"})
+
+    assert resp.status_code == 500
+    assert "boom" in resp.json()["detail"]

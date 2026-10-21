@@ -20,6 +20,11 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/gitea", tags=["gitea"])
 
+# Instance-wide repo search: Gitea's max page size for API listings, and a
+# safety cap on pages walked (50 repos/page * 100 pages = 5,000 repos).
+SEARCH_PAGE_SIZE = 50
+SEARCH_MAX_PAGES = 100
+
 
 class RepoCreate(BaseModel):
     """Schema for creating a new repository."""
@@ -108,6 +113,45 @@ class PRFileChange(BaseModel):
     changes: int = Field(default=0, description="Total line changes")
     binary: bool = Field(default=False, description="Is a binary file")
     patch: str = Field(default="", description="Unified diff patch")
+
+
+class RepoSearchResult(BaseModel):
+    """Schema for a single repository matched by an instance-wide search."""
+
+    full_name: str = Field(..., description="Owner/repo full name")
+    name: str = Field(..., description="Repository name")
+    owner: str = Field(..., description="Owner (username or organisation)")
+    description: str = Field(default="", description="Repository description")
+    html_url: str = Field(default="", description="Web UI URL")
+    clone_url: str = Field(default="", description="HTTPS clone URL")
+    private: bool = Field(
+        default=False, description="Whether the repository is private"
+    )
+    default_branch: str = Field(default="", description="Default branch")
+    size: int = Field(default=0, description="Repository size in KB")
+    updated_at: str = Field(default="", description="ISO 8601 timestamp of last update")
+    matched_in: list[str] = Field(
+        default_factory=list,
+        description="Fields the search term matched in: name, owner and/or description",
+    )
+
+
+class RepoSearchResponse(BaseModel):
+    """Schema for the instance-wide repository search response."""
+
+    query: str = Field(..., description="The search term that was searched for")
+    results: list[RepoSearchResult] = Field(
+        default_factory=list, description="Repositories matching the search term"
+    )
+    repos_scanned: int = Field(
+        default=0,
+        description="How many repositories were walked while searching",
+    )
+    truncated: bool = Field(
+        default=False,
+        description="True when the walk stopped at the page cap and more repos may exist",
+    )
+    message: str = Field(default="", description="Human-readable summary")
 
 
 # Maps the companion's review type names to the Gitea/Forgejo API values.
@@ -292,6 +336,134 @@ async def list_repos(
         "GET",
         f"{settings.gitea_api_url}/user/repos",
         params={"page": page, "limit": limit},
+    )
+
+
+@router.get(
+    "/repos/search",
+    summary="Search repositories across the instance",
+    operation_id="GiteaSearchRepos",
+)
+async def search_repos(
+    q: str = Query(
+        ..., min_length=1, description="Search term (case-insensitive substring)"
+    ),
+    max_results: int = Query(
+        default=25,
+        ge=1,
+        le=100,
+        description="Maximum number of matching repositories to return",
+    ),
+) -> RepoSearchResponse:
+    """Search repositories across the whole Gitea instance.
+
+    GiteaListRepos only returns the token holder's own repositories (and a
+    single page at that). This tool walks every page of the instance-wide
+    repository listing — all public repositories plus any private ones the
+    token can access — and returns those whose name, owner or description
+    contains the search term (case-insensitive substring match).
+
+    Use this to locate a repository when its owner is unknown. The walk
+    stops early once ``max_results`` matches are found and is capped at
+    ``SEARCH_MAX_PAGES`` pages; ``truncated`` is true when the cap was hit,
+    in which case the search term should be narrowed.
+    """
+    term = q.strip().lower()
+    if not term:
+        raise GiteaError("Search term must not be blank", status_code=400)
+
+    api = settings.gitea_api_url
+    page = 1
+    results: list[RepoSearchResult] = []
+    scanned = 0
+    truncated = False
+    stopped_early = False
+
+    while len(results) < max_results:
+        if page > SEARCH_MAX_PAGES:
+            truncated = True
+            break
+
+        data = await _gitea_request(
+            "GET",
+            f"{api}/repos/search",
+            params={"page": page, "limit": SEARCH_PAGE_SIZE},
+        )
+        # Gitea wraps search results in {"ok": true, "data": [...]};
+        # tolerate a bare list as well.
+        repos = data if isinstance(data, list) else data.get("data") or []
+        if not isinstance(repos, list) or not repos:
+            break
+
+        for repo in repos:
+            scanned += 1
+            if not isinstance(repo, dict):
+                continue
+            owner = (repo.get("owner") or {}).get("login", "")
+            name = repo.get("name", "")
+            full_name = repo.get("full_name") or (f"{owner}/{name}" if owner else name)
+            description = repo.get("description") or ""
+
+            matched_in = []
+            if name and term in name.lower():
+                matched_in.append("name")
+            if owner and term in owner.lower():
+                matched_in.append("owner")
+            if term in description.lower():
+                matched_in.append("description")
+            if not matched_in:
+                continue
+
+            results.append(
+                RepoSearchResult(
+                    full_name=full_name,
+                    name=name,
+                    owner=owner,
+                    description=description,
+                    html_url=repo.get("html_url", ""),
+                    clone_url=repo.get("clone_url", ""),
+                    private=bool(repo.get("private", False)),
+                    default_branch=repo.get("default_branch", ""),
+                    size=int(repo.get("size") or 0),
+                    updated_at=repo.get("updated_at") or "",
+                    matched_in=matched_in,
+                )
+            )
+            if len(results) >= max_results:
+                stopped_early = True
+                break
+
+        # A short page is the last one; otherwise keep walking until we
+        # have enough matches or hit the page cap.
+        if stopped_early or len(repos) < SEARCH_PAGE_SIZE:
+            break
+        page += 1
+
+    if stopped_early:
+        message = (
+            f"First {len(results)} matches for '{q}' found after scanning "
+            f"{scanned} repositories; further scanning stopped at max_results."
+        )
+    elif results:
+        message = f"{len(results)} of {scanned} scanned repositories match '{q}'"
+    else:
+        message = f"No repositories matching '{q}' among {scanned} scanned."
+    if truncated:
+        message += " Walk hit the page cap — narrow the search term."
+
+    logger.info(
+        "Instance-wide repo search",
+        q=q,
+        scanned=scanned,
+        matches=len(results),
+        truncated=truncated,
+    )
+    return RepoSearchResponse(
+        query=q,
+        results=results,
+        repos_scanned=scanned,
+        truncated=truncated,
+        message=message,
     )
 
 
@@ -746,7 +918,9 @@ async def get_pr_diff(
         return PlainTextResponse(response)
     # If it came back as a dict (some Gitea versions), try to extract
     if isinstance(response, dict):
-        return PlainTextResponse(response.get("content", response.get("diff", str(response))))
+        return PlainTextResponse(
+            response.get("content", response.get("diff", str(response)))
+        )
     return PlainTextResponse(str(response))
 
 
@@ -1253,8 +1427,7 @@ async def get_pipeline_output(
         jobs_list = (
             jobs_data
             if isinstance(jobs_data, list)
-            else jobs_data.get("jobs")
-            or jobs_data.get("workflow_jobs", [])
+            else jobs_data.get("jobs") or jobs_data.get("workflow_jobs", [])
         )
         logger.info("Fetched jobs via /jobs endpoint", count=len(jobs_list))
     except GiteaError as e:
@@ -1332,9 +1505,7 @@ async def get_pipeline_output(
                     f"[Logs not available via API. View in browser: {job_url}]"
                 )
             else:
-                log_sections.append(
-                    f"[Logs not available via API for job {job_id}]"
-                )
+                log_sections.append(f"[Logs not available via API for job {job_id}]")
             logger.info(
                 "Logs endpoint not available for job",
                 owner=owner,

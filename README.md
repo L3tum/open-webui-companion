@@ -12,6 +12,7 @@ A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/
 ### Gitea Integration
 - **GiteaCreateRepo**: Create a new repository
 - **GiteaListRepos**: List your repositories
+- **GiteaSearchRepos**: Find a repository instance-wide by name, owner or description
 - **GiteaGetRepo**: Get repository details
 - **GiteaCreateFile**: Create or update a file
 - **GiteaGetFile**: Get file contents
