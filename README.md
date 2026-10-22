@@ -288,6 +288,7 @@ openwebui-companion-server/
 3. Include the router in `app/main.py`:
    ```python
    from app.weather import router as weather_router
+
    app.include_router(weather_router)
    ```
 

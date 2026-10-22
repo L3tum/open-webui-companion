@@ -7,6 +7,9 @@ the company website itself are all mocked with respx; the only search
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
 import respx
 from respx import MockRouter
 
@@ -15,6 +18,24 @@ from app.vetting import _VET_CACHE
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _fresh_vetting_state(monkeypatch):
+    """Reset the process-wide vetting caches so every test is hermetic.
+
+    ``_load_iana_bootstrap`` memoises the IANA bootstrap file in a module
+    global for 24 hours, and the endpoint memoises verdicts in
+    ``_VET_CACHE``; without clearing both, the mocked
+    ``data.iana.org/rdap/dns.json`` route goes uncalled in every test
+    after the first one.
+    """
+    import app.vetting as vetting
+
+    monkeypatch.setattr(vetting, "_iana_bootstrap", {})
+    monkeypatch.setattr(vetting, "_iana_bootstrap_at", 0.0)
+    vetting._VET_CACHE.clear()
+
 
 BOOTSTRAP_JSON = {
     "description": "IANA RDAP bootstrap (test subset)",
@@ -93,13 +114,43 @@ GOOD_IMPRESSION = """
 """
 
 
+# First archive capture ~30 days ago, computed at import time so the test
+# stays valid over time. The scam RDAP mock below deliberately carries no
+# registration event (GDPR-redacted registries), so this Wayback capture is
+# what the pipeline falls back on for the domain age.
+RECENT_CAPTURE_TS = (datetime.now(UTC) - timedelta(days=30)).strftime(
+    "%Y%m%d"
+) + "120000"
+
+
 def _scam_routes(m: MockRouter, domain: str) -> None:
     """Mock the full external surface for a young, foreign-registrar scam domain."""
     m.get("https://data.iana.org/rdap/dns.json").respond(json=BOOTSTRAP_JSON)
-    m.get(f"https://rdap.denic.de/domain/{domain}").respond(status_code=404, json={"error": "not found"})
+    # ".example" has no RDAP base URL in the IANA bootstrap, so the pipeline
+    # falls back to the rdap.org proxy; the record is mocked there. No
+    # registration event (GDPR-style redaction) -> age comes from Wayback.
+    m.get(f"https://rdap.org/domain/{domain}").respond(
+        json={
+            "ldhName": domain,
+            "events": [],
+            "entities": [
+                {
+                    "roles": ["registrar"],
+                    "vcardArray": [
+                        "vcard",
+                        [
+                            ["fn", {}, "text", "101domain GmbH"],
+                            ["country", {}, "text", "JP"],
+                        ],
+                    ],
+                }
+            ],
+        },
+        headers={"content-type": "application/rdap+json"},
+    )
     m.get(
         f"https://web.archive.org/cdx/search/cdx?url={domain}&output=json&limit=1&fl=timestamp"
-    ).respond(json=[["timestamp"], ["20190601120000"]])
+    ).respond(json=[["timestamp"], [RECENT_CAPTURE_TS]])
     m.get(f"https://{domain}/").respond(
         text=SCAM_HTML, headers={"content-type": "text/html; charset=utf-8"}
     )
@@ -111,10 +162,34 @@ def _scam_routes(m: MockRouter, domain: str) -> None:
 def _good_routes(m: MockRouter, domain: str) -> None:
     """Mock the full external surface for an established German company."""
     m.get("https://data.iana.org/rdap/dns.json").respond(json=BOOTSTRAP_JSON)
-    m.get(f"https://rdap.denic.de/domain/{domain}").respond(status_code=404, json={"error": "not found"})
-    m.get(
-        f"https://web.archive.org/cdx/search/cdx?url={domain}&output=json&limit=1&fl=timestamp"
-    ).respond(json=[["timestamp"], ["20110101120000"]])
+    # ".de" resolves to DENIC via _KNOWN_RDAP_BASES: an established domain
+    # with a German registrar.
+    m.get(f"https://rdap.denic.de/domain/{domain}").respond(
+        json={
+            "ldhName": domain,
+            "events": [
+                {"eventAction": "registration", "eventDate": "1995-05-01T00:00:00Z"},
+                {"eventAction": "expiration", "eventDate": "2030-05-01T00:00:00Z"},
+            ],
+            "entities": [
+                {
+                    "roles": ["registrar"],
+                    "vcardArray": [
+                        "vcard",
+                        [
+                            ["fn", {}, "text", "Merkur Registration"],
+                            ["country", {}, "text", "DE"],
+                        ],
+                    ],
+                }
+            ],
+        },
+        headers={"content-type": "application/rdap+json"},
+    )
+    # No Wayback CDX route: the record above carries a registration event,
+    # so the pipeline derives the domain age from RDAP and never falls back
+    # to the first archive capture. (That fallback is exercised by the scam
+    # routes, whose RDAP mock is deliberately redacted.)
     m.get(f"https://{domain}/").respond(
         text=GOOD_PAGE, headers={"content-type": "text/html; charset=utf-8"}
     )
@@ -134,14 +209,15 @@ class TestVetCompany:
         with respx.mock() as m:
             _scam_routes(m, "scam.example")
             r = client.post(
-                "/vet/company", json={"name": "Scam GmbH", "url": "https://scam.example/"}
+                "/vet/company",
+                json={"name": "Scam GmbH", "url": "https://scam.example/"},
             )
         assert r.status_code == 200
         body = r.json()
         assert body["verdict"] == "reject"
         assert any("registrar country JP" in x for x in body["rejections"])
         assert body["checks"]["impressum"]["status"] == "reject"
-        assert body["checks"]["rdap"]["data"]["first_archived"] == "20190601"
+        assert body["checks"]["rdap"]["data"]["first_archived"] == RECENT_CAPTURE_TS[:8]
         assert body["checks"]["mentions"]["status"] == "flag"
 
     def test_established_german_company_passes(self, client, monkeypatch):
@@ -159,7 +235,10 @@ class TestVetCompany:
             _good_routes(m, "acme-industrial.de")
             r = client.post(
                 "/vet/company",
-                json={"name": "Acme Industrial GmbH", "url": "https://acme-industrial.de/"},
+                json={
+                    "name": "Acme Industrial GmbH",
+                    "url": "https://acme-industrial.de/",
+                },
             )
         assert r.status_code == 200
         body = r.json()
@@ -175,7 +254,8 @@ class TestVetCompany:
         with respx.mock() as m:
             _scam_routes(m, "scam2.example")
             r = client.post(
-                "/vet/company", json={"name": "Scam Two GmbH", "url": "https://scam2.example/"}
+                "/vet/company",
+                json={"name": "Scam Two GmbH", "url": "https://scam2.example/"},
             )
         assert r.status_code == 200
         body = r.json()

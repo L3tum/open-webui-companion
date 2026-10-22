@@ -167,7 +167,7 @@ async def _load_iana_bootstrap(client: httpx.AsyncClient) -> dict[str, str]:
                 _iana_bootstrap = tld_map
                 _iana_bootstrap_at = time.monotonic()
     except (httpx.RequestError, ValueError) as exc:
-        logger.warning("RDAP bootstrap fetch failed: %s", exc)
+        logger.warning("RDAP bootstrap fetch failed", error=str(exc))
     return _iana_bootstrap
 
 
@@ -175,7 +175,9 @@ def _rdap_base_url(tld_map: dict[str, str], host: str) -> str | None:
     """Find the RDAP base URL for a host (TLD first, then ccTLD 2nd level)."""
     parts = host.split(".")
     if len(parts) >= 2:
-        base = tld_map.get(parts[-1].lower()) or _KNOWN_RDAP_BASES.get(parts[-1].lower())
+        base = tld_map.get(parts[-1].lower()) or _KNOWN_RDAP_BASES.get(
+            parts[-1].lower()
+        )
         if base:
             return base
     if len(parts) >= 3:
@@ -202,7 +204,12 @@ def _parse_rdap_record(data: dict) -> dict:
             dt = dt.replace(tzinfo=UTC)
         if registered is None and action in {"registration", "registered"}:
             registered = dt
-        elif expires is None and action in {"expiration", "expiry", "expires", "renewal"}:
+        elif expires is None and action in {
+            "expiration",
+            "expiry",
+            "expires",
+            "renewal",
+        }:
             expires = dt
 
     registrar_name: str | None = None
@@ -249,12 +256,17 @@ async def _first_wayback_capture(client: httpx.AsyncClient, host: str) -> str | 
         resp = await client.get(url)
         if resp.status_code == 200:
             rows = resp.json()
-            if isinstance(rows, list) and len(rows) >= 2 and isinstance(rows[1], list) and rows[1]:
+            if (
+                isinstance(rows, list)
+                and len(rows) >= 2
+                and isinstance(rows[1], list)
+                and rows[1]
+            ):
                 ts = str(rows[1][0])
                 if re.fullmatch(r"\d{14}", ts):
                     return ts[:8]
     except (httpx.RequestError, ValueError) as exc:
-        logger.info("Wayback CDX lookup failed for %s: %s", host, exc)
+        logger.info("Wayback CDX lookup failed", domain=host, error=str(exc))
     return None
 
 
@@ -289,8 +301,12 @@ async def _check_rdap(client: httpx.AsyncClient, host: str) -> CheckResult:
         break
 
     if parsed is None:
-        detail = "no RDAP record found (404)" if not_found else "no reachable RDAP source"
-        return CheckResult(name="rdap", status="unavailable", detail=detail, data={"host": host})
+        detail = (
+            "no RDAP record found (404)" if not_found else "no reachable RDAP source"
+        )
+        return CheckResult(
+            name="rdap", status="unavailable", detail=detail, data={"host": host}
+        )
 
     first_archived: str | None = None
     archive_age_days: int | None = None
@@ -298,7 +314,9 @@ async def _check_rdap(client: httpx.AsyncClient, host: str) -> CheckResult:
         first_archived = await _first_wayback_capture(client, host)
         if first_archived:
             try:
-                captured = datetime.strptime(first_archived, "%Y%m%d").replace(tzinfo=UTC)
+                captured = datetime.strptime(first_archived, "%Y%m%d").replace(
+                    tzinfo=UTC
+                )
                 archive_age_days = max(0, (datetime.now(UTC) - captured).days)
             except ValueError:
                 first_archived = None
@@ -331,7 +349,9 @@ async def _check_rdap(client: httpx.AsyncClient, host: str) -> CheckResult:
         if parsed["age_days"] is not None
         else f"first archived {first_archived}"
     )
-    tail = f" (registrar: {parsed['registrar_name']})" if parsed["registrar_name"] else ""
+    tail = (
+        f" (registrar: {parsed['registrar_name']})" if parsed["registrar_name"] else ""
+    )
     if parsed["registrar_country"]:
         tail += f", registrar country {parsed['registrar_country']}"
 
@@ -363,9 +383,15 @@ _BLOCK_END_RE = re.compile(
     re.I,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
-_IMP_LINK_RE = re.compile(r'<a\b[^>]*href=["\']([^"\'#>]+)["\'][^>]*>([^<]{0,80})</a>', re.I)
-_IMP_HEADING_RE = re.compile(r"^[ \t]*(?:[A-Za-zÄÖÜäöüß0-9&. -]{0,40}[Ii]mpressum)[ \t]*$", re.M)
-_PLZ_CITY_RE = re.compile(r"\b(0\d{4}|[1-9]\d{4})[ \t]+([A-ZÄÖÜ][A-Za-zÄÖÜß' .\-]{2,30})\b")
+_IMP_LINK_RE = re.compile(
+    r'<a\b[^>]*href=["\']([^"\'#>]+)["\'][^>]*>([^<]{0,80})</a>', re.I
+)
+_IMP_HEADING_RE = re.compile(
+    r"^[ \t]*(?:[A-Za-zÄÖÜäöüß0-9&. -]{0,40}[Ii]mpressum)[ \t]*$", re.M
+)
+_PLZ_CITY_RE = re.compile(
+    r"\b(0\d{4}|[1-9]\d{4})[ \t]+([A-ZÄÖÜ][A-Za-zÄÖÜäöüß' .\-]{2,30})\b"
+)
 _ANY_PHONE_RE = re.compile(
     r"(\+\d{1,3}[\s\-()./]{0,3}\(?\d{1,4}\)?[\s\-()./\d]{6,18}|\b0\d{2,5}[\s\-/]{0,3}\d{4,11}\b)"
 )
@@ -404,7 +430,7 @@ async def _fetch_page(client: httpx.AsyncClient, url: str) -> tuple[str, str] | 
     try:
         resp = await client.get(url, headers={"User-Agent": settings.VET_USER_AGENT})
     except httpx.RequestError as exc:
-        logger.info("vetting fetch failed for %s: %s", url, exc)
+        logger.info("vetting fetch failed", url=url, error=str(exc))
         return None
     if resp.status_code >= 400:
         return None
@@ -465,7 +491,7 @@ async def _check_impressum(
     pm = _ANY_PHONE_RE.search(section)
     if pm:
         phone = re.sub(r"\s+", " ", pm.group(1)).strip()
-    phone_is_de = bool(phone) and (phone.startswith("+49") or phone.startswith("0"))
+    phone_is_de = bool(phone) and phone.startswith(("+49", "0"))
 
     registry_numbers: list[str] = []
     for hm in _HRB_RE.finditer(section):
@@ -517,15 +543,21 @@ async def _check_impressum(
             extra = [p for p in problems if p != problems[0]]
             if extra:
                 detail += "; " + "; ".join(extra)
-            return CheckResult(name="impressum", status="reject", detail=detail, data=data)
-        return CheckResult(name="impressum", status="flag", detail="; ".join(problems), data=data)
+            return CheckResult(
+                name="impressum", status="reject", detail=detail, data=data
+            )
+        return CheckResult(
+            name="impressum", status="flag", detail="; ".join(problems), data=data
+        )
 
     bits = [f"Impressum at {imp_url}"]
     if plz:
         bits.append(f"PLZ {plz} {city}")
     if registry_numbers:
         bits.append(", ".join(registry_numbers[:3]))
-    return CheckResult(name="impressum", status="pass", detail=" | ".join(bits), data=data)
+    return CheckResult(
+        name="impressum", status="pass", detail=" | ".join(bits), data=data
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -548,9 +580,13 @@ def _analyze_language(text: str) -> CheckResult:
         )
     try:
         detector = LangDetector(cache_size=128)
-    except Exception as exc:  # defensive: never fail the pipeline over the language check
+    except (
+        Exception
+    ) as exc:  # defensive: never fail the pipeline over the language check
         return CheckResult(
-            name="language", status="unavailable", detail=f"langdetect unavailable: {exc}"
+            name="language",
+            status="unavailable",
+            detail=f"langdetect unavailable: {exc}",
         )
 
     langs: list[str] = []
@@ -561,12 +597,14 @@ def _analyze_language(text: str) -> CheckResult:
             continue
     if len(langs) < 4:
         return CheckResult(
-            name="language", status="unavailable", detail="not enough detectable paragraphs"
+            name="language",
+            status="unavailable",
+            detail="not enough detectable paragraphs",
         )
 
     counts = Counter(langs)
     dominant = counts.most_common(1)[0][0]
-    switches = sum(1 for a, b in zip(langs, langs[1:]) if a != b)
+    switches = sum(1 for a, b in zip(langs, langs[1:], strict=False) if a != b)
     data: dict = {
         "dominant_language": dominant,
         "language_switches": switches,
@@ -594,7 +632,9 @@ def _analyze_language(text: str) -> CheckResult:
 async def _check_language(client: httpx.AsyncClient, url: str) -> CheckResult:
     page = await _fetch_page(client, url)
     if page is None:
-        return CheckResult(name="language", status="unavailable", detail="site unreachable")
+        return CheckResult(
+            name="language", status="unavailable", detail="site unreachable"
+        )
     return _analyze_language(html_to_text(page[0]))
 
 
@@ -649,7 +689,9 @@ def _check_mentions(name: str, domain: str) -> CheckResult:
         if host in seen:
             continue
         seen.add(host)
-        third_party.append({"host": host, "url": href, "title": str(r.get("title") or "")[:120]})
+        third_party.append(
+            {"host": host, "url": href, "title": str(r.get("title") or "")[:120]}
+        )
 
     count = len(third_party)
     if count == 0:
@@ -795,11 +837,14 @@ def _score_checks(
     reg_country = rdap.data.get("registrar_country")
 
     young = isinstance(rdap_age, int) and rdap_age < settings.VET_MIN_DOMAIN_AGE_DAYS
-    mid_age = isinstance(rdap_age, int) and rdap_age < settings.VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS
-    zero_mentions = men.status == "flag"
-    claims_form_without_registry = bool(imp.data.get("legal_forms")) and not imp.data.get(
-        "registry_numbers"
+    mid_age = (
+        isinstance(rdap_age, int)
+        and rdap_age < settings.VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS
     )
+    zero_mentions = men.status == "flag"
+    claims_form_without_registry = bool(
+        imp.data.get("legal_forms")
+    ) and not imp.data.get("registry_numbers")
 
     rejections: list[str] = []
     flags: list[str] = []
@@ -812,7 +857,9 @@ def _score_checks(
                 f"and domain only {rdap_age} days old"
             )
         else:
-            flags.append(f"registrar country {reg_country} differs from claimed market {market}")
+            flags.append(
+                f"registrar country {reg_country} differs from claimed market {market}"
+            )
 
     # R2/R3: Impressum (status already encodes missing / no valid address).
     if imp.status == "reject":
@@ -965,11 +1012,13 @@ async def vet_company(req: VetRequest) -> VetResponse:
     )
     _cache_put(key, resp)
     logger.info(
-        "vetting %s (%s): %s — %s",
-        host,
-        name,
-        verdict,
-        "; ".join(rejections) if rejections else ("; ".join(flags) if flags else "clean"),
+        "vetting completed",
+        domain=host,
+        name=name,
+        verdict=verdict,
+        reasons="; ".join(rejections)
+        if rejections
+        else ("; ".join(flags) if flags else "clean"),
     )
     return resp
 
@@ -998,5 +1047,7 @@ async def vet_health() -> dict:
         "mentions_enabled": settings.VET_ENABLE_MENTIONS,
         "langdetect": "available" if LangDetector is not None else "not installed",
         "ddgs": ddgs_state,
-        "registry_lookup_configured": bool((settings.VET_REGISTRY_URL_TEMPLATE or "").strip()),
+        "registry_lookup_configured": bool(
+            (settings.VET_REGISTRY_URL_TEMPLATE or "").strip()
+        ),
     }
