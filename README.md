@@ -5,7 +5,7 @@
 I had some bigger goals with this but decided to switch away and build something else. As such the functionality here is basically the same as Forgejo-MCP or Gitea-MCP projects.
 
 
-A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for Gitea integration and chat context inspection, compaction, and recall.
+A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/open-webui) that provides persistent tools for Gitea integration, chat context inspection/compaction/recall, and deterministic company/website vetting.
 
 ## Features
 
@@ -19,33 +19,66 @@ A FastAPI-based companion server for [Open-WebUI](https://github.com/open-webui/
 - **GiteaListFiles**: List files in a directory
 - **GiteaCreateIssue**: Create an issue
 - **GiteaListIssues**: List issues
-- **GiteaUpdateIssue**: Update an issue's title and/or description
+- **GiteaUpdateIssue**: Update an issue's title/description
 - **GiteaCreatePR**: Create a pull request
 - **GiteaListPRs**: List pull requests
-- **GiteaUpdatePR**: Update a pull request's title and/or description
+- **GiteaUpdatePR**: Update a PR's title/description
 - **GiteaPostComment**: Post a comment on an issue or PR
 - **GiteaListComments**: List comments on an issue or PR
 - **GiteaDeleteComment**: Delete a comment
-- **GiteaGetPRDiff**: Get a PR's diff
-- **GiteaGetPRFiles**: Get changed files in a PR
-- **GiteaListPRComments**: List PR review comments
-- **GiteaSubmitPRReview**: Submit a PR review
-- **GiteaGetPRSummary**: Get a PR summary
-- **GiteaGetPRPipeline**: Get pipeline status for a PR
-- **GiteaGetPipelineOutput**: Get pipeline output/logs
+- **GiteaGetPRDiff**: Get the full diff of a PR
+- **GiteaGetPRFiles**: List files changed in a PR
+- **GiteaListPRComments**: List review comments on a PR
+- **GiteaSubmitPRReview**: Submit a review on a PR
+- **GiteaGetPRSummary**: Get a structured PR summary
+- **GiteaGetPRPipeline**: Check PR pipeline status
+- **GiteaGetPipelineOutput**: Get pipeline output and logs
 - **GiteaGetToken**: Get the configured Gitea API token
 - **GiteaHealth**: Check Gitea connection
 
 ### Context Compaction
-Inspect a chat's model context, manually compact it, and *recall* dropped
-detail by searching the full un-compacted history (within one chat or
-across all chats). Uses OWUI_INSTANCE_URL / OWUI_TOKEN; chat-data calls
-act as the validated calling user (see
+Inspect a chat's model context, manually compact it, and *recall*
+dropped detail by searching the full un-compacted history (within one
+chat or across all chats). Uses OWUI_INSTANCE_URL / OWUI_TOKEN; chat-data
+calls act as the validated calling user (see
 [Per-user identity](#per-user-identity)).
 - **ContextUsage**: Inspect a chat's model context window usage
 - **ContextCompact**: Manually compact a chat's context
 - **ContextSearch**: Search a chat's (or all accessible chats') full history
 - **ContextHealth**: Check OWUI connection and resolved identity
+
+### Company Vetting
+Deterministic anti-scam checks for a company name + website, designed to
+keep search-engine use minimal — almost everything is a direct lookup
+(RDAP registry data, the website itself, the Wayback Machine), and the
+single optional exact-name search is cached with the verdict and can be
+disabled entirely.
+- **VetCompany**: Vet a company/website -> verdict `pass`/`flag`/`reject` with per-check evidence
+- **VetHealth**: Check vetting dependency availability
+
+Checks:
+- **rdap** — domain age + registrar country. RDAP base URLs come from the
+  IANA bootstrap file (`data.iana.org/rdap/dns.json`); registries without
+  a resolvable registration date (e.g. DENIC/.de, GDPR-redacted) fall
+  back to the first Wayback Machine capture as an age lower bound.
+- **impressum** — German Impressum extraction (§ 5 DDG): postal
+  address/PLZ, phone format, HRB registry numbers, VAT id, legal form,
+  plus consistency (e.g. claims "GmbH" but lists no registry number).
+- **language** — per-paragraph language fingerprint (langdetect); a
+  mid-document language switch is flagged as an LLM-generation marker.
+- **mentions** — ONE exact-name search via ddgs, counting *third-party*
+  domains only (the company's own domain excluded). Disabled with
+  `VET_ENABLE_MENTIONS=false`; a failed search is treated as
+  inconclusive, never as "zero mentions".
+- **registry** — derived from the Impressum by default; a live lookup can
+  be configured with `VET_REGISTRY_URL_TEMPLATE` when you have a direct,
+  machine-readable registry API (handelsregister.de is a stateful JS app
+  and not plain-GET queryable).
+
+> **System prompt**: add "Use VetCompany before recommending any
+> company/website. Verdict reject -> do not recommend, say why, and
+> offer alternatives; verdict flag -> recommend only as explicitly
+> unverified."
 
 ### Health
 - **HealthCheck**: Health check endpoint for monitoring
@@ -196,6 +229,14 @@ Once running, visit:
 | `OWUI_ALLOW_USER_TOKEN` | Accept the forwarded user JWT (Session auth) as the acting identity | `true` |
 | `OWUI_TOKEN_CACHE_TTL` | Validation cache TTL (seconds) for forwarded/user tokens | `300` |
 | `OWUI_FORWARD_JWT_SECRET` | Shared secret to verify the signed `X-OpenWebUI-User-Jwt` header (empty = cross-check off) | (empty) |
+| `VET_ENABLE_MENTIONS` | Enable the one optional search-engine query (third-party mentions) | `true` |
+| `VET_MENTION_MAX_RESULTS` | Max results for the mention check | `10` |
+| `VET_MIN_DOMAIN_AGE_DAYS` | Domain age (days) below which the domain is flagged | `90` |
+| `VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS` | Max domain age (days) for a foreign-registrar *rejection* (vs. flag) | `180` |
+| `VET_CACHE_TTL` | Seconds to reuse an identical verdict (same name + domain) | `86400` |
+| `VET_HTTP_TIMEOUT` | Per-request timeout (seconds) for vetting lookups | `20.0` |
+| `VET_REGISTRY_URL_TEMPLATE` | Direct registry lookup URL with `{query}` placeholder (empty = Impressum-derived check) | (empty) |
+| `VET_USER_AGENT` | User agent for vetting lookups | `open-webui-companion-vetting/1.0` |
 
 ## Security Notes
 
@@ -231,6 +272,7 @@ openwebui-companion-server/
 │   ├── context.py       # Open-WebUI context compaction + recall endpoints
 │   ├── identity.py      # Per-user identity resolution (forwarded JWT + static fallback)
 │   ├── gitea.py         # Gitea endpoints
+│   ├── vetting.py       # Company/website vetting endpoints
 │   └── owui.py          # Shared Open-WebUI API client
 ├── Dockerfile
 ├── docker-compose.yml
