@@ -30,20 +30,32 @@ Checks
 Verdicts: ``pass`` / ``flag`` / ``reject``. Every check returns its own
 status and raw evidence so the calling agent can explain the result and
 a human can audit it.
+
+Caching
+-------
+Verdicts are cached per name + domain, first in-process
+(``VET_CACHE_TTL``, default 24 h), then persistently in a local SQLite
+database (``VET_CACHE_DB_PATH``, default ``data/vetting.db``,
+``VET_CACHE_DB_TTL``, default 30 days) so results survive restarts and
+can be inspected via ``GET /vet/cache``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html as html_mod
 import re
+import sqlite3
 import time
 from collections import Counter
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -948,6 +960,173 @@ def _cache_put(key: str, resp: VetResponse) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Persistent verdict cache (SQLite)
+# ---------------------------------------------------------------------------
+
+
+class SqliteVerdictCache:
+    """Persistent verdict cache: verdict + reasoning per name + domain.
+
+    A local SQLite database so vetting results survive restarts and can
+    be inspected (``GET /vet/cache``). Entries expire after
+    ``VET_CACHE_DB_TTL`` (default 30 days); expired rows are deleted
+    lazily on read and opportunistically on write. All methods are
+    non-raising: a broken database degrades to a cold cache instead of
+    taking the vetting pipeline down.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = Path(path)
+
+    @contextlib.contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS vet_results ("
+                " key TEXT PRIMARY KEY,"
+                " domain TEXT NOT NULL,"
+                " verdict TEXT NOT NULL,"
+                " summary TEXT NOT NULL,"
+                " payload TEXT NOT NULL,"
+                " created_ts REAL NOT NULL,"
+                " expires_ts REAL NOT NULL)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vet_results_domain"
+                " ON vet_results (domain)"
+            )
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get(self, key: str) -> VetResponse | None:
+        """Cached response for ``key``, or None when absent/expired."""
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT payload, expires_ts FROM vet_results WHERE key = ?",
+                    (key,),
+                ).fetchone()
+                if row is None:
+                    return None
+                if row["expires_ts"] <= time.time():
+                    conn.execute("DELETE FROM vet_results WHERE key = ?", (key,))
+                    return None
+                resp = VetResponse.model_validate_json(row["payload"])
+                resp.cached = True
+                return resp
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            logger.warning("verdict cache read failed", error=str(exc))
+            return None
+
+    def put(self, key: str, resp: VetResponse, ttl: int) -> None:
+        """Store (or refresh) a verdict; drop other expired rows."""
+        now = time.time()
+        try:
+            with self._connection() as conn:
+                conn.execute(
+                    "INSERT INTO vet_results (key, domain, verdict, summary,"
+                    " payload, created_ts, expires_ts)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET"
+                    " domain = excluded.domain, verdict = excluded.verdict,"
+                    " summary = excluded.summary, payload = excluded.payload,"
+                    " created_ts = excluded.created_ts,"
+                    " expires_ts = excluded.expires_ts",
+                    (
+                        key,
+                        resp.domain,
+                        resp.verdict,
+                        resp.summary,
+                        resp.model_dump_json(),
+                        now,
+                        now + ttl,
+                    ),
+                )
+                conn.execute("DELETE FROM vet_results WHERE expires_ts < ?", (now,))
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("verdict cache write failed", error=str(exc))
+
+    def list(self, limit: int = 100) -> list[dict]:
+        """Newest valid entries: domain, verdict, reasoning, expiry."""
+        now = time.time()
+        try:
+            with self._connection() as conn:
+                rows = conn.execute(
+                    "SELECT domain, verdict, summary, created_ts, expires_ts"
+                    " FROM vet_results WHERE expires_ts > ?"
+                    " ORDER BY created_ts DESC LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("verdict cache list failed", error=str(exc))
+            return []
+        return [
+            {
+                "domain": r["domain"],
+                "verdict": r["verdict"],
+                "summary": r["summary"],
+                "checked_at": datetime.fromtimestamp(r["created_ts"], UTC).isoformat(
+                    timespec="seconds"
+                ),
+                "expires_at": datetime.fromtimestamp(r["expires_ts"], UTC).isoformat(
+                    timespec="seconds"
+                ),
+                "seconds_left": max(0, int(r["expires_ts"] - now)),
+            }
+            for r in rows
+        ]
+
+    def count(self) -> int:
+        """Number of valid (non-expired) entries."""
+        try:
+            with self._connection() as conn:
+                return int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM vet_results WHERE expires_ts > ?",
+                        (time.time(),),
+                    ).fetchone()[0]
+                )
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("verdict cache count failed", error=str(exc))
+            return 0
+
+    def clear(self) -> int:
+        """Delete all entries; returns how many were removed."""
+        try:
+            with self._connection() as conn:
+                cur = conn.execute("DELETE FROM vet_results")
+                return int(cur.rowcount)
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("verdict cache clear failed", error=str(exc))
+            return 0
+
+
+_db_cache: SqliteVerdictCache | None = None
+
+
+def _get_db_cache() -> SqliteVerdictCache | None:
+    """Lazily construct the persistent cache (None when disabled).
+
+    Reconstructs when the configured path changes (e.g. in tests), so
+    the module-level instance never points at a stale database.
+    """
+    global _db_cache
+    if not settings.VET_CACHE_DB_ENABLED:
+        return None
+    if _db_cache is None or str(_db_cache.path) != settings.VET_CACHE_DB_PATH:
+        _db_cache = SqliteVerdictCache(settings.VET_CACHE_DB_PATH)
+    return _db_cache
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -975,7 +1154,12 @@ async def vet_company(req: VetRequest) -> VetResponse:
     market = req.claimed_market.lower()
     key = _cache_key(name, host)
     cached = _cache_get(key)
+    if cached is None:
+        db_cache = _get_db_cache()
+        if db_cache is not None:
+            cached = await asyncio.to_thread(db_cache.get, key)
     if cached is not None:
+        _cache_put(key, cached)
         return cached
 
     async with httpx.AsyncClient(
@@ -1011,6 +1195,9 @@ async def vet_company(req: VetRequest) -> VetResponse:
         cached=False,
     )
     _cache_put(key, resp)
+    db_cache = _get_db_cache()
+    if db_cache is not None:
+        await asyncio.to_thread(db_cache.put, key, resp, settings.VET_CACHE_DB_TTL)
     logger.info(
         "vetting completed",
         domain=host,
@@ -1042,6 +1229,14 @@ async def vet_health() -> dict:
             ddgs_state = "available (duckduckgo_search)"
         except ImportError:
             pass
+    db_cache = _get_db_cache()
+    cache_db: dict = {
+        "enabled": db_cache is not None,
+        "path": str(db_cache.path) if db_cache is not None else None,
+        "ttl_seconds": settings.VET_CACHE_DB_TTL,
+    }
+    if db_cache is not None:
+        cache_db["entries"] = await asyncio.to_thread(db_cache.count)
     return {
         "status": "ok",
         "mentions_enabled": settings.VET_ENABLE_MENTIONS,
@@ -1050,4 +1245,39 @@ async def vet_health() -> dict:
         "registry_lookup_configured": bool(
             (settings.VET_REGISTRY_URL_TEMPLATE or "").strip()
         ),
+        "cache_db": cache_db,
     }
+
+
+@router.get(
+    "/cache",
+    summary="List cached vetting verdicts (persistent tier)",
+    operation_id="VetCacheList",
+)
+async def vet_cache_list(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    """List cached verdicts: domain, verdict, reasoning and expiry."""
+    db_cache = _get_db_cache()
+    if db_cache is None:
+        return {"enabled": False, "entries": []}
+    entries = await asyncio.to_thread(db_cache.list, limit)
+    return {
+        "enabled": True,
+        "path": str(db_cache.path),
+        "entries": entries,
+    }
+
+
+@router.delete(
+    "/cache",
+    summary="Clear the persistent verdict cache",
+    operation_id="VetCacheClear",
+)
+async def vet_cache_clear() -> dict:
+    """Delete all cached verdicts (persistent + in-process tiers)."""
+    db_cache = _get_db_cache()
+    if db_cache is not None:
+        cleared = await asyncio.to_thread(db_cache.clear)
+    else:
+        cleared = 0
+    _VET_CACHE.clear()
+    return {"enabled": db_cache is not None, "cleared": cleared}

@@ -55,6 +55,8 @@ single optional exact-name search is cached with the verdict and can be
 disabled entirely.
 - **VetCompany**: Vet a company/website -> verdict `pass`/`flag`/`reject` with per-check evidence
 - **VetHealth**: Check vetting dependency availability
+- **VetCacheList**: List cached verdicts (domain, verdict, reasoning, expiry) from the persistent SQLite cache
+- **VetCacheClear**: Clear the persistent + in-process verdict cache
 
 Checks:
 - **rdap** — domain age + registrar country. RDAP base URLs come from the
@@ -74,6 +76,14 @@ Checks:
   be configured with `VET_REGISTRY_URL_TEMPLATE` when you have a direct,
   machine-readable registry API (handelsregister.de is a stateful JS app
   and not plain-GET queryable).
+
+Caching: verdicts are cached per name + domain, first in-process
+(`VET_CACHE_TTL`, default 24 h) and then persistently in a local SQLite
+database (`VET_CACHE_DB_PATH`, default `data/vetting.db`,
+`VET_CACHE_DB_TTL`, default 30 days), so results survive restarts. Each
+entry stores the verdict, the reasoning (summary + full per-check
+evidence) and its expiry, and can be inspected or cleared via
+`VetCacheList` / `VetCacheClear`.
 
 > **System prompt**: add "Use VetCompany before recommending any
 > company/website. Verdict reject -> do not recommend, say why, and
@@ -233,7 +243,10 @@ Once running, visit:
 | `VET_MENTION_MAX_RESULTS` | Max results for the mention check | `10` |
 | `VET_MIN_DOMAIN_AGE_DAYS` | Domain age (days) below which the domain is flagged | `90` |
 | `VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS` | Max domain age (days) for a foreign-registrar *rejection* (vs. flag) | `180` |
-| `VET_CACHE_TTL` | Seconds to reuse an identical verdict (same name + domain) | `86400` |
+| `VET_CACHE_TTL` | Seconds to reuse an identical verdict (same name + domain, in-process tier) | `86400` |
+| `VET_CACHE_DB_ENABLED` | Enable the persistent SQLite verdict cache | `true` |
+| `VET_CACHE_DB_PATH` | SQLite database path for the verdict cache | `data/vetting.db` |
+| `VET_CACHE_DB_TTL` | Seconds a cached verdict stays valid in the persistent tier | `2592000` (30 days) |
 | `VET_HTTP_TIMEOUT` | Per-request timeout (seconds) for vetting lookups | `20.0` |
 | `VET_REGISTRY_URL_TEMPLATE` | Direct registry lookup URL with `{query}` placeholder (empty = Impressum-derived check) | (empty) |
 | `VET_USER_AGENT` | User agent for vetting lookups | `open-webui-companion-vetting/1.0` |

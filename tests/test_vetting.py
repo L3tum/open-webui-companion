@@ -7,6 +7,7 @@ the company website itself are all mocked with respx; the only search
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,19 +22,26 @@ from app.vetting import _VET_CACHE
 
 
 @pytest.fixture(autouse=True)
-def _fresh_vetting_state(monkeypatch):
+def _fresh_vetting_state(monkeypatch, tmp_path):
     """Reset the process-wide vetting caches so every test is hermetic.
 
     ``_load_iana_bootstrap`` memoises the IANA bootstrap file in a module
     global for 24 hours, and the endpoint memoises verdicts in
     ``_VET_CACHE``; without clearing both, the mocked
     ``data.iana.org/rdap/dns.json`` route goes uncalled in every test
-    after the first one.
+    after the first one. The persistent SQLite tier gets a fresh
+    per-test database file.
     """
     import app.vetting as vetting
 
     monkeypatch.setattr(vetting, "_iana_bootstrap", {})
     monkeypatch.setattr(vetting, "_iana_bootstrap_at", 0.0)
+    monkeypatch.setattr(vetting, "_db_cache", None)
+    monkeypatch.setattr(
+        vetting.settings,
+        "VET_CACHE_DB_PATH",
+        str(tmp_path / "vetting.db"),
+    )
     vetting._VET_CACHE.clear()
 
 
@@ -300,3 +308,114 @@ class TestVetHealth:
         assert body["status"] == "ok"
         assert body["mentions_enabled"] is True
         assert body["langdetect"] in {"available", "not installed"}
+
+
+# ---------------------------------------------------------------------------
+# Persistent verdict cache (SQLite)
+# ---------------------------------------------------------------------------
+
+
+class TestVerdictCache:
+    def test_verdict_persists_across_in_process_cache_reset(self, client, monkeypatch):
+        """A verdict survives a 'restart' (in-process cache wiped)."""
+        import app.vetting as vetting
+
+        monkeypatch.setattr("app.vetting._mentions_search", lambda q, n: [])
+        payload = {"name": "Scam Five GmbH", "url": "https://scam5.example/"}
+        with respx.mock() as m:
+            _scam_routes(m, "scam5.example")
+            r1 = client.post("/vet/company", json=payload)
+        assert r1.status_code == 200
+        body1 = r1.json()
+        assert body1["cached"] is False
+        assert body1["verdict"] == "reject"
+
+        # Simulate a server restart: wipe the in-process tier only.
+        vetting._VET_CACHE.clear()
+
+        with respx.mock():  # no routes: a hit must not touch the network
+            r2 = client.post("/vet/company", json=payload)
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert body2["cached"] is True
+        assert body2["verdict"] == body1["verdict"]
+        assert body2["rejections"] == body1["rejections"]
+        assert body2["summary"] == body1["summary"]
+
+    def test_sqlite_row_stores_domain_verdict_and_reasoning(self, client, monkeypatch):
+        """The database row carries domain, verdict and the reasoning."""
+        import app.vetting as vetting
+
+        monkeypatch.setattr("app.vetting._mentions_search", lambda q, n: [])
+        with respx.mock() as m:
+            _scam_routes(m, "scam6.example")
+            r = client.post(
+                "/vet/company",
+                json={"name": "Scam Six GmbH", "url": "https://scam6.example/"},
+            )
+        assert r.status_code == 200
+        conn = sqlite3.connect(vetting.settings.VET_CACHE_DB_PATH)
+        row = conn.execute(
+            "SELECT domain, verdict, summary, created_ts, expires_ts FROM vet_results"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        domain, verdict, summary, created_ts, expires_ts = row
+        assert domain == "scam6.example"
+        assert verdict == "reject"
+        assert "registrar country JP" in summary
+        assert expires_ts - created_ts == pytest.approx(
+            vetting.settings.VET_CACHE_DB_TTL, abs=5
+        )
+
+    def test_expired_entry_is_revetted(self, client, monkeypatch):
+        """An entry past its TTL is discarded and the pipeline reruns."""
+        import app.vetting as vetting
+
+        monkeypatch.setattr("app.vetting._mentions_search", lambda q, n: [])
+        payload = {"name": "Scam Seven GmbH", "url": "https://scam7.example/"}
+        with respx.mock() as m:
+            _scam_routes(m, "scam7.example")
+            r1 = client.post("/vet/company", json=payload)
+        assert r1.json()["cached"] is False
+
+        conn = sqlite3.connect(vetting.settings.VET_CACHE_DB_PATH)
+        conn.execute("UPDATE vet_results SET expires_ts = 0")
+        conn.commit()
+        conn.close()
+        vetting._VET_CACHE.clear()
+        # The fixture reset the IANA bootstrap cache at test start, but the
+        # first pipeline run refilled it; reset again so the rerun hits
+        # this mock block's routes.
+        vetting._iana_bootstrap = {}
+        vetting._iana_bootstrap_at = 0.0
+
+        with respx.mock() as m:
+            _scam_routes(m, "scam7.example")
+            r2 = client.post("/vet/company", json=payload)
+        assert r2.json()["cached"] is False
+
+    def test_cache_list_and_clear_endpoints(self, client, monkeypatch):
+        """GET /vet/cache lists verdicts; DELETE clears them."""
+        monkeypatch.setattr("app.vetting._mentions_search", lambda q, n: [])
+        with respx.mock() as m:
+            _scam_routes(m, "scam8.example")
+            r = client.post(
+                "/vet/company",
+                json={"name": "Scam Eight GmbH", "url": "https://scam8.example/"},
+            )
+        assert r.status_code == 200
+
+        r = client.get("/vet/cache")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["enabled"] is True
+        entry = next(e for e in body["entries"] if e["domain"] == "scam8.example")
+        assert entry["verdict"] == "reject"
+        assert entry["seconds_left"] > 0
+        assert entry["expires_at"]
+
+        r = client.delete("/vet/cache")
+        assert r.status_code == 200
+        assert r.json()["cleared"] >= 1
+        assert client.get("/vet/cache").json()["entries"] == []

@@ -76,8 +76,19 @@ class Settings:
     VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS: int = _env_int(
         "VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS", 180
     )
-    # Seconds to reuse an identical verdict (same name + domain).
+    # Seconds to reuse an identical verdict (same name + domain) in the
+    # in-process tier. The persistent SQLite tier below survives restarts.
     VET_CACHE_TTL: int = _env_int("VET_CACHE_TTL", 86400)
+    # Persistent verdict cache (SQLite): each vetted name + domain is
+    # stored with its verdict, summary/reasoning and full check evidence,
+    # so results survive restarts and can be inspected via GET /vet/cache.
+    VET_CACHE_DB_ENABLED: bool = (
+        os.getenv("VET_CACHE_DB_ENABLED", "true").lower() == "true"
+    )
+    VET_CACHE_DB_PATH: str = os.getenv("VET_CACHE_DB_PATH", "data/vetting.db")
+    # Seconds a cached verdict stays valid in the persistent tier
+    # (default: 30 days).
+    VET_CACHE_DB_TTL: int = _env_int("VET_CACHE_DB_TTL", 30 * 86400)
     # Optional direct registry lookup, e.g.
     # "https://api.myregistry.local/search?name={query}" ({query} = the
     # URL-encoded company name). Empty = registry check derived from the
