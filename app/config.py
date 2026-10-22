@@ -1,20 +1,17 @@
-"""Configuration management for the companion server."""
+"""
+Configuration management for the Open-WebUI Companion Server.
+
+Loads settings from environment variables and an optional .env file.
+"""
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.errors import ConfigError
-
-# Load environment variables from .env file
-load_dotenv()
-
 
 def _env_int(name: str, default: int) -> int:
-    """Parse an integer env var, falling back to ``default`` when unset or malformed.
-
-    A malformed value must not crash the process at import time (F8).
-    """
+    """Parse an integer environment variable, falling back to ``default`` when unset or malformed."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -24,100 +21,75 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    """Parse a float environment variable, falling back to ``default`` when unset or malformed."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Load .env file from project root if it exists
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE)
+
+
 class Settings:
     """Application settings loaded from environment variables."""
 
     # Gitea Configuration
     GITEA_INSTANCE_URL: str = os.getenv("GITEA_INSTANCE_URL", "https://gitea.com")
     GITEA_TOKEN: str = os.getenv("GITEA_TOKEN", "")
-    EXPOSE_GITEA_TOKEN: bool = (
-        os.getenv("EXPOSE_GITEA_TOKEN", "false").lower() == "true"
-    )
+    GITEA_USERNAME: str = os.getenv("GITEA_USERNAME", "")
 
     # Open-WebUI Configuration
-    OWUI_INSTANCE_URL: str = os.getenv("OWUI_INSTANCE_URL", "http://localhost:8080")
+    OWUI_INSTANCE_URL: str = os.getenv("OWUI_INSTANCE_URL", "")
     OWUI_TOKEN: str = os.getenv("OWUI_TOKEN", "")
-    # Per-user identity (context tools). When OWUI_ALLOW_USER_TOKEN is
-    # false, every call uses the static OWUI_TOKEN (legacy admin mode).
-    OWUI_ALLOW_USER_TOKEN: bool = (
-        os.getenv("OWUI_ALLOW_USER_TOKEN", "true").lower() == "true"
-    )
-    OWUI_TOKEN_CACHE_TTL: int = _env_int("OWUI_TOKEN_CACHE_TTL", 300)
+    # Accept per-user tokens forwarded from Open-WebUI. When enabled,
+    # chat-data endpoints REQUIRE a forwarded user token and never use
+    # the static OWUI_TOKEN; when disabled everything runs as OWUI_TOKEN
+    # (legacy mode).
+    OWUI_ALLOW_USER_TOKEN: bool = os.getenv("OWUI_ALLOW_USER_TOKEN", "true").lower() == "true"
+    # Shared secret (must equal Open-WebUI's JWT_SECRET) for verifying the
+    # signed X-OpenWebUI-User-Jwt header. When set, forwarded-token
+    # requests must carry a valid header (fail-closed). Empty = off.
     OWUI_FORWARD_JWT_SECRET: str = os.getenv("OWUI_FORWARD_JWT_SECRET", "")
+    # Seconds to cache validated user tokens
+    OWUI_TOKEN_CACHE_TTL: int = _env_int("OWUI_TOKEN_CACHE_TTL", 300)
+
+    # Company Vetting Configuration
+    # The single optional search-engine query (exact company name) for the
+    # third-party-mention check. Everything else is a direct lookup
+    # (RDAP, the website itself, the Wayback Machine).
+    VET_ENABLE_MENTIONS: bool = os.getenv("VET_ENABLE_MENTIONS", "true").lower() == "true"
+    VET_MENTION_MAX_RESULTS: int = _env_int("VET_MENTION_MAX_RESULTS", 10)
+    VET_HTTP_TIMEOUT: float = _env_float("VET_HTTP_TIMEOUT", 20.0)
+    # A domain younger than this is flagged; combined with a foreign
+    # registrar (or zero mentions + no registry number) it rejects.
+    VET_MIN_DOMAIN_AGE_DAYS: int = _env_int("VET_MIN_DOMAIN_AGE_DAYS", 90)
+    # A foreign registrar is only a rejection together with a domain this
+    # young or younger; older foreign-registrar domains are flagged only.
+    VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS: int = _env_int(
+        "VET_FOREIGN_REGISTRAR_MAX_AGE_DAYS", 180
+    )
+    # Seconds to reuse an identical verdict (same name + domain).
+    VET_CACHE_TTL: int = _env_int("VET_CACHE_TTL", 86400)
+    # Optional direct registry lookup, e.g.
+    # "https://api.myregistry.local/search?name={query}" ({query} = the
+    # URL-encoded company name). Empty = registry check derived from the
+    # Impressum only (handelsregister.de is a stateful JS app, not
+    # plain-GET queryable).
+    VET_REGISTRY_URL_TEMPLATE: str = os.getenv("VET_REGISTRY_URL_TEMPLATE", "")
+    VET_USER_AGENT: str = os.getenv("VET_USER_AGENT", "open-webui-companion-vetting/1.0")
 
     # Server Configuration
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = _env_int("PORT", 8090)
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
-    LOG_STRUCTURED: bool = os.getenv("LOG_STRUCTURED", "true").lower() == "true"
-
-    @property
-    def gitea_api_url(self) -> str:
-        """Get the Gitea API base URL."""
-        url = self.GITEA_INSTANCE_URL.rstrip("/")
-        return f"{url}/api/v1"
-
-    @property
-    def gitea_headers(self) -> dict:
-        """Get headers for Gitea API requests."""
-        return {
-            "Authorization": f"token {self.GITEA_TOKEN}",
-            "Content-Type": "application/json",
-        }
-
-    @property
-    def owui_api_url(self) -> str:
-        """Get the Open-WebUI API base URL."""
-        url = self.OWUI_INSTANCE_URL.rstrip("/")
-        return f"{url}/api/v1"
-
-    @property
-    def owui_headers(self) -> dict:
-        """Get headers for Open-WebUI API requests."""
-        return {
-            "Authorization": f"Bearer {self.OWUI_TOKEN}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-    def is_gitea_configured(self) -> bool:
-        """Check if Gitea is properly configured."""
-        return bool(self.GITEA_TOKEN)
-
-    def require_gitea_config(self) -> None:
-        """Raise ConfigError if Gitea is not configured."""
-        if not self.is_gitea_configured():
-            raise ConfigError(
-                "Gitea is not configured. Set GITEA_TOKEN and "
-                "GITEA_INSTANCE_URL environment variables."
-            )
-
-    def is_owui_configured(self) -> bool:
-        """Check if the Open-WebUI instance is configured.
-
-        Only the instance URL is required here: the acting token is
-        per-caller (a validated forwarded user token, or the static
-        OWUI_TOKEN in legacy/diagnostic use).
-        """
-        return bool(self.OWUI_INSTANCE_URL)
-
-    def has_static_owui_token(self) -> bool:
-        """Check whether a static OWUI_TOKEN is configured.
-
-        Endpoints that always act as the static token must use this
-        rather than :meth:`is_owui_configured` (which is true as soon as
-        a URL exists, even with zero credentials).
-        """
-        return bool(self.OWUI_TOKEN)
-
-    def require_owui_config(self) -> None:
-        """Raise ConfigError if Open-WebUI is not configured."""
-        if not self.is_owui_configured():
-            raise ConfigError(
-                "Open-WebUI is not configured. Set OWUI_INSTANCE_URL "
-                "and a user token (forwarded or OWUI_TOKEN)."
-            )
 
 
-# Global settings instance
 settings = Settings()
