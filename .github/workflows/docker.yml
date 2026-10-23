@@ -43,7 +43,7 @@ jobs:
   publish:
     needs: [test]
     if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
-    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@main
+    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@d2fdda085ba30d019e52118458c9de3d3a91c6cc # main
     runs-on: ubuntu-latest
     secrets:
       PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
