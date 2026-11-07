@@ -90,6 +90,31 @@ evidence) and its expiry, and can be inspected or cleared via
 > offer alternatives; verdict flag -> recommend only as explicitly
 > unverified."
 
+### Inventory
+
+Three endpoints backed by a SilverBullet notebook (via the same
+`silverbullet-mcp` server Open-WebUI already uses):
+
+- **`POST /inventory/find`** — search `inventory/` for items (`type="item"`,
+  the default) or locations (`type="location"`). Searches title + content by
+  default; `location` restricts to a location path, `limit` caps results,
+  `details` includes frontmatter properties.
+- **`POST /inventory/add`** — add an item (`type="item"`) or a location
+  (`type="location"`). Items get a note at `inventory/<location>/<name>.md`
+  with arbitrary `properties` (e.g. colour, cable length) mirrored into the
+  YAML frontmatter. Location names are matched exactly, then by unique leaf,
+  suffix, and substring — ambiguous matches return **409** with the candidate
+  list so the model can pick one. Adding an item to a missing location
+  returns **404** with the `add_inventory(type="location", ...)` hint; adding
+  a location that already exists is idempotent.
+- **`POST /inventory/take`** — delete an item or location note from
+  `inventory/`. Deletes require `confirm=true`; deleting a location that
+  still contains items is refused with **409** and a count.
+
+Configuration (`SILVERBULLET_MCP_URL` + `SILVERBULLET_MCP_TOKEN`) must match
+the MCP server entry in Open-WebUI, so no separate SilverBullet credential
+is needed.
+
 ### Health
 - **HealthCheck**: Health check endpoint for monitoring
 - **Root**: Root endpoint with API documentation links
@@ -166,6 +191,11 @@ Company recommendations:
 - Use VetCompany before recommending any company/website.
 - Verdict reject -> do not recommend; say why and offer alternatives.
 - Verdict flag -> recommend only as explicitly unverified.
+
+Inventory:
+- To add an item: FindInventory(type='location') to find the location (create it first with AddInventory(type='location') if it does not exist), then AddInventory(type='item', ...).
+- To find where something is: FindInventory(query='...').
+- To remove an item: TakeInventory(...) with confirm=true.
 
 Gitea:
 - Use Gitea tools to create repositories, edit files, manage issues, and review PRs.
@@ -265,6 +295,10 @@ Once running, visit:
 | `VET_HTTP_TIMEOUT` | Per-request timeout (seconds) for vetting lookups | `20.0` |
 | `VET_REGISTRY_URL_TEMPLATE` | Direct registry lookup URL with `{query}` placeholder (empty = Impressum-derived check) | (empty) |
 | `VET_USER_AGENT` | User agent for vetting lookups | `open-webui-companion-vetting/1.0` |
+| `SILVERBULLET_MCP_URL` | MCP endpoint of the SilverBullet server (same URL as the OWUI MCP entry) | (required for inventory tools) |
+| `SILVERBULLET_MCP_TOKEN` | MCP token for the SilverBullet server | (required for inventory tools) |
+| `SILVERBULLET_MCP_TIMEOUT` | Per-call timeout (seconds) for MCP tool calls | `30.0` |
+| `INVENTORY_MAX_LIST_PAGES` | Max list-notes pages walked when counting inventory notes | `10` |
 
 ## Security Notes
 
@@ -301,6 +335,8 @@ openwebui-companion-server/
 │   ├── identity.py      # Per-user identity resolution (forwarded JWT + static fallback)
 │   ├── gitea.py         # Gitea endpoints
 │   ├── vetting.py       # Company/website vetting endpoints
+│   ├── inventory.py     # Inventory endpoints (find/add/take) over SilverBullet
+│   ├── mcp.py           # Minimal MCP (streamable HTTP) client for silverbullet-mcp
 │   └── owui.py          # Shared Open-WebUI API client
 ├── Dockerfile
 ├── docker-compose.yml

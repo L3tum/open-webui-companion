@@ -18,6 +18,7 @@ from app.config import settings
 from app.context import router as context_router
 from app.errors import add_error_handlers
 from app.gitea import router as gitea_router
+from app.inventory import router as inventory_router
 from app.logging import get_logger, setup_logging
 from app.vetting import router as vetting_router
 
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
         gitea_configured=settings.is_gitea_configured(),
         owui_configured=settings.is_owui_configured(),
         owui_token_configured=settings.has_static_owui_token(),
+        silverbullet_mcp_configured=settings.is_silverbullet_mcp_configured(),
     )
 
     # Shared HTTP client for Open-WebUI API calls (connection pooling).
@@ -96,10 +98,18 @@ disabled via `VET_ENABLE_MENTIONS=false`.
 - **VetCompany**: Vet a company/website -> verdict pass/flag/reject
 - **VetHealth**: Check vetting dependencies
 
+## Inventory (Homebox-style, backed by SilverBullet notes under inventory/)
+Locations are folders, items are notes; arbitrary properties are written
+to both frontmatter and the page body.
+- **FindInventory**: Find items (default) or locations (type='location')
+- **AddInventory**: Add an item, or create a location (type='location')
+- **TakeInventory**: Remove an item, or a location (type='location')
+- **InventoryHealth**: Check the SilverBullet MCP bridge + inventory contents
+
 ## System Prompt Recommendations
 Add this to your Open-WebUI model's system prompt:
 
-> You have access to Gitea tools and context recall.
+> You have access to Gitea tools, context recall and an inventory.
 > - Use Gitea tools to create repos, edit files, create PRs, and comment on issues/PRs.
 > - After creating or modifying a PR, use GiteaGetPRPipeline to check if CI passed.
 > - If a pipeline fails, use GiteaGetPipelineOutput to fetch the
@@ -115,6 +125,12 @@ Add this to your Open-WebUI model's system prompt:
 >   `reject` -> do not recommend it, tell the user why, and offer
 >   alternatives. Verdict `flag` -> recommend only as explicitly
 >   unverified.
+> - To add something to the inventory: first FindInventory(type='location')
+>   to find the location (or create it with AddInventory(type='location')),
+>   then AddInventory(name=..., location=..., properties={...}). If the
+>   location is ambiguous the error lists candidates - pick one and retry.
+> - To find something: FindInventory(query=...). To take something away:
+>   TakeInventory(name=..., location=...).
     """,
     version="1.0.0",
     lifespan=lifespan,
@@ -136,6 +152,7 @@ add_error_handlers(app)
 app.include_router(context_router)
 app.include_router(gitea_router)
 app.include_router(vetting_router)
+app.include_router(inventory_router)
 
 
 @app.get("/health", tags=["system"])

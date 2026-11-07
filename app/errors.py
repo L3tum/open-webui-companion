@@ -36,6 +36,28 @@ class ConfigError(Exception):
     """Raised when required configuration is missing."""
 
 
+class MCPError(Exception):
+    """Raised when an MCP server call fails (transport, protocol, or tool error)."""
+
+    def __init__(self, message: str, status_code: int = 502, response_data: Any = None):
+        self.status_code = status_code
+        self.response_data = response_data
+        super().__init__(message)
+
+
+class InventoryError(Exception):
+    """Raised for inventory domain errors (ambiguous or missing locations, etc.).
+
+    ``extra`` is merged into the JSON error body so callers (and the LLM)
+    can act on it — e.g. an ambiguous location returns its candidates.
+    """
+
+    def __init__(self, message: str, status_code: int = 400, extra: Any = None):
+        self.status_code = status_code
+        self.extra = extra
+        super().__init__(message)
+
+
 def _error_response(detail: str, status_code: int) -> JSONResponse:
     """Create a consistent JSON error response."""
     return JSONResponse(
@@ -92,6 +114,39 @@ def add_error_handlers(app: FastAPI) -> None:
         """Handle configuration errors."""
         logger.error("Configuration error", detail=str(exc), path=request.url.path)
         return _error_response(str(exc), status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @app.exception_handler(MCPError)
+    async def handle_mcp_error(request: Request, exc: MCPError) -> JSONResponse:
+        """Handle MCP transport/protocol errors as upstream failures."""
+        logger.error(
+            "MCP error",
+            status_code=exc.status_code,
+            detail=str(exc),
+            path=request.url.path,
+        )
+        return _error_response(str(exc), exc.status_code)
+
+    @app.exception_handler(InventoryError)
+    async def handle_inventory_error(
+        request: Request, exc: InventoryError
+    ) -> JSONResponse:
+        """Handle inventory domain errors, merging ``extra`` (e.g. candidates) into the body."""
+        logger.warning(
+            "Inventory error",
+            status_code=exc.status_code,
+            detail=str(exc),
+            path=request.url.path,
+        )
+        body: dict[str, Any] = {
+            "error": True,
+            "detail": str(exc),
+            "status_code": exc.status_code,
+        }
+        if isinstance(exc.extra, dict):
+            body.update(exc.extra)
+        elif exc.extra is not None:
+            body["extra"] = exc.extra
+        return JSONResponse(status_code=exc.status_code, content=body)
 
     @app.exception_handler(httpx.HTTPStatusError)
     async def handle_httpx_error(

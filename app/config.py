@@ -99,6 +99,16 @@ class Settings:
         "VET_USER_AGENT", "open-webui-companion-vetting/1.0"
     )
 
+    # SilverBullet MCP Configuration (inventory tools).
+    # The companion calls the silverbullet-mcp server that Open-WebUI
+    # itself uses - same URL/token the OWUI MCP server entry points at -
+    # so no separate SilverBullet credential is needed.
+    SILVERBULLET_MCP_URL: str = os.getenv("SILVERBULLET_MCP_URL", "")
+    SILVERBULLET_MCP_TOKEN: str = os.getenv("SILVERBULLET_MCP_TOKEN", "")
+    SILVERBULLET_MCP_TIMEOUT: float = _env_float("SILVERBULLET_MCP_TIMEOUT", 30.0)
+    # Safety cap: maximum list-notes pages walked when scanning inventory/.
+    INVENTORY_MAX_LIST_PAGES: int = _env_int("INVENTORY_MAX_LIST_PAGES", 10)
+
     # Server Configuration
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = _env_int("PORT", 8090)
@@ -170,6 +180,19 @@ class Settings:
             raise ConfigError(
                 "Open-WebUI is not configured. Set OWUI_INSTANCE_URL "
                 "and a user token (forwarded or OWUI_TOKEN)."
+            )
+
+    def is_silverbullet_mcp_configured(self) -> bool:
+        """Check if the SilverBullet MCP bridge is configured."""
+        return bool(self.SILVERBULLET_MCP_URL and self.SILVERBULLET_MCP_TOKEN)
+
+    def require_silverbullet_mcp_config(self) -> None:
+        """Raise ConfigError if the SilverBullet MCP bridge is not configured."""
+        if not self.is_silverbullet_mcp_configured():
+            raise ConfigError(
+                "SilverBullet MCP is not configured. Set SILVERBULLET_MCP_URL "
+                "and SILVERBULLET_MCP_TOKEN (the same values the Open-WebUI "
+                "MCP server entry for silverbullet-mcp uses)."
             )
 
 
