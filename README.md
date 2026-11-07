@@ -107,9 +107,10 @@ Three endpoints backed by a SilverBullet notebook (via the same
   list so the model can pick one. Adding an item to a missing location
   returns **404** with the `add_inventory(type="location", ...)` hint; adding
   a location that already exists is idempotent.
-- **`POST /inventory/take`** — delete an item or location note from
-  `inventory/`. Deletes require `confirm=true`; deleting a location that
-  still contains items is refused with **409** and a count.
+- **`POST /inventory/take`** — mark an item as taken in its frontmatter
+  (`taken: true` + `taken_at`, UTC ISO-8601) — nothing is ever deleted.
+  Ambiguous item names return **409** with candidates; unknown items
+  **404**. Locations cannot be taken (they are folders).
 
 Configuration (`SILVERBULLET_MCP_URL` + `SILVERBULLET_MCP_TOKEN`) must match
 the MCP server entry in Open-WebUI, so no separate SilverBullet credential
@@ -195,7 +196,7 @@ Company recommendations:
 Inventory:
 - To add an item: FindInventory(type='location') to find the location (create it first with AddInventory(type='location') if it does not exist), then AddInventory(type='item', ...).
 - To find where something is: FindInventory(query='...').
-- To remove an item: TakeInventory(...) with confirm=true.
+- To take something away: TakeInventory(name=..., location=...) — it marks the item's frontmatter with taken: true + taken_at; nothing is deleted.
 
 Gitea:
 - Use Gitea tools to create repositories, edit files, manage issues, and review PRs.

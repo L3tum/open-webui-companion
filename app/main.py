@@ -103,7 +103,7 @@ Locations are folders, items are notes; arbitrary properties are written
 to both frontmatter and the page body.
 - **FindInventory**: Find items (default) or locations (type='location')
 - **AddInventory**: Add an item, or create a location (type='location')
-- **TakeInventory**: Remove an item, or a location (type='location')
+- **TakeInventory**: Mark an item as taken in its frontmatter (taken: true + taken_at); nothing is deleted
 - **InventoryHealth**: Check the SilverBullet MCP bridge + inventory contents
 
 ## System Prompt Recommendations
@@ -130,7 +130,8 @@ Add this to your Open-WebUI model's system prompt:
 >   then AddInventory(name=..., location=..., properties={...}). If the
 >   location is ambiguous the error lists candidates - pick one and retry.
 > - To find something: FindInventory(query=...). To take something away:
->   TakeInventory(name=..., location=...).
+>   TakeInventory(name=..., location=...) - it marks the item as taken in
+>   its frontmatter (taken: true + taken_at); nothing is deleted.
     """,
     version="1.0.0",
     lifespan=lifespan,

@@ -24,6 +24,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import yaml
@@ -153,11 +154,11 @@ class AddInventoryRequest(BaseModel):
 
 
 class TakeInventoryRequest(BaseModel):
-    """Remove an item (default) or a location from the inventory."""
+    """Mark an item as taken in its frontmatter (nothing is deleted)."""
 
     type: Literal["item", "location"] = Field(
         "item",
-        description="'item' (default) or 'location'.",
+        description="'item' (default). 'location' is rejected: nothing is deleted anymore.",
     )
     name: str = Field(
         ...,
@@ -165,17 +166,12 @@ class TakeInventoryRequest(BaseModel):
         max_length=300,
         description=(
             "Item name, or a full item path relative to inventory/ "
-            "(e.g. 'usb-c-cable' or 'office/drawer/usb-c-cable'). "
-            "For locations: the location path relative to inventory/."
+            "(e.g. 'usb-c-cable' or 'office/drawer/usb-c-cable')."
         ),
     )
     location: str | None = Field(
         None,
         description="Disambiguate an item name by location (path or unique leaf name).",
-    )
-    confirm: bool = Field(
-        False,
-        description="Required to remove a location that still contains notes.",
     )
 
 
@@ -214,14 +210,17 @@ class AddInventoryResponse(BaseModel):
 
 
 class TakeInventoryResponse(BaseModel):
-    removed: bool = True
-    type: Literal["item", "location"]
+    taken: bool = True
+    type: Literal["item"]
     path: str
     name: str
-    properties: dict[str, str] = Field(default_factory=dict)
-    removed_children: list[str] = Field(
-        default_factory=list,
-        description="Notes removed beneath a location (type=location only).",
+    taken_at: str | None = Field(
+        None,
+        description="ISO-8601 (UTC) timestamp written to the item's frontmatter.",
+    )
+    properties: dict[str, str] = Field(
+        default_factory=dict,
+        description="Resulting frontmatter properties (includes the taken markers).",
     )
 
 
@@ -547,6 +546,46 @@ def _build_note_content(
     return "\n".join(lines)
 
 
+def _mark_note_taken(content: str, taken_at: str) -> str:
+    """Set ``taken: true`` / ``taken_at`` in a note's YAML frontmatter.
+
+    Surgical line edit: existing lines for those keys are replaced in
+    place, missing keys are inserted before the closing ``---``, and a
+    minimal frontmatter block is created when the note has none. The
+    rest of the note is preserved byte-for-byte.
+    """
+    lines = content.splitlines()
+    trailing_nl = content.endswith("\n")
+    start = end = None
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                start, end = 0, i
+                break
+    # Quoted via _yaml_scalar so YAML keeps the timestamp a plain string
+    # (an unquoted ISO-8601 value would be loaded back as a datetime).
+    taken_at_yaml = _yaml_scalar(taken_at)
+    if start is None:
+        lines = ["---", "taken: true", f"taken_at: {taken_at_yaml}", "---", ""] + lines
+    else:
+        for i in range(start + 1, end):
+            key = lines[i].split(":", 1)[0].strip().lower()
+            if key == "taken":
+                lines[i] = "taken: true"
+            elif key == "taken_at":
+                lines[i] = f"taken_at: {taken_at_yaml}"
+        keys = {
+            lines[i].split(":", 1)[0].strip().lower() for i in range(start + 1, end)
+        }
+        if "taken" not in keys:
+            lines.insert(end, "taken: true")
+            end += 1
+        if "taken_at" not in keys:
+            lines.insert(end, f"taken_at: {taken_at_yaml}")
+    text = "\n".join(lines)
+    return text + ("\n" if trailing_nl else "")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -756,62 +795,30 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
 
 @router.post(
     "/take",
-    summary="Remove an item or a location",
+    summary="Mark an item as taken in its frontmatter",
     operation_id="TakeInventory",
     response_model=TakeInventoryResponse,
 )
 async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse:
-    """Remove an item (default) or a location from the inventory.
+    """Mark an item as taken — nothing is deleted.
 
-    Items are addressed by name (optionally disambiguated with
-    ``location``) or by full item path. Removing a location requires
-    ``confirm=true`` and also removes everything beneath it.
+    The item's frontmatter gets ``taken: true`` plus a ``taken_at``
+    timestamp (UTC, ISO-8601); the note and its content stay in place.
+    Taking the same item twice just refreshes the timestamp.
     """
     settings.require_silverbullet_mcp_config()
+
+    if request.type == "location":
+        raise InventoryError(
+            "TakeInventory no longer removes anything: items are only "
+            "marked as taken in their frontmatter. Locations are folders "
+            "and cannot be taken — remove them manually in SilverBullet "
+            "if you want them gone.",
+            400,
+        )
     names, _ = await _list_notes()
     folders = [n for n in names if _is_folder(n)]
     items = [n for n in names if not _is_folder(n)]
-
-    if request.type == "location":
-        target = _normalize_location(request.name)
-        if not target:
-            raise InventoryError(f"'{request.name}' is not a usable location path", 400)
-        rel_folders = sorted({_relative(_note_stem(f)) for f in folders} - {""})
-        t = target.lower()
-        matches = [r for r in rel_folders if r.lower() == t or r.rsplit("/", 1)[-1].lower() == t]
-        if not matches:
-            raise InventoryError(f"Location '{target}' does not exist", 404,
-                                 extra={"candidates": []})
-        if len(matches) > 1:
-            raise InventoryError(
-                f"Location '{target}' is ambiguous", 409,
-                extra={"candidates": matches, "hint": "Pass the full location path."},
-            )
-        loc_rel = matches[0]
-        prefix = f"inventory/{loc_rel}/"
-        children = [n for n in names if n != prefix and n.startswith(prefix)]
-        if children and not request.confirm:
-            raise InventoryError(
-                f"Location '{loc_rel}' still contains {len(children)} note(s); "
-                "pass confirm=true to remove it and everything beneath.",
-                409,
-                extra={"children": children},
-            )
-        mcp = await _mcp()
-        removed_children: list[str] = []
-        for child in children:
-            try:
-                await mcp.call_tool("delete-note", {"filename": _as_filename(_note_stem(child))})
-                removed_children.append(child)
-            except MCPError:
-                logger.warning("Failed to delete child note", path=child)
-        try:
-            await mcp.call_tool("delete-note", {"filename": prefix})
-        except MCPError:
-            logger.warning("Failed to delete folder note (may be empty)", path=prefix)
-        return TakeInventoryResponse(
-            removed=True, type="location", path=prefix, name=loc_rel, removed_children=removed_children
-        )
 
     # --- items -------------------------------------------------------------
     raw = request.name.strip()
@@ -846,24 +853,34 @@ async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse
             },
         )
     stem = _note_stem(candidates[0])
-    properties: dict[str, str] = {}
+    filename = _as_filename(stem)
     try:
-        properties = _public_properties(_parse_frontmatter(await _read_note(_as_filename(stem))))
-    except MCPError:
-        pass
-    mcp = await _mcp()
-    try:
-        await mcp.call_tool("delete-note", {"filename": _as_filename(stem)})
+        content = await _read_note(filename)
     except MCPError as exc:
-        if _is_conflict_message(str(exc)):
-            raise
-        raise
+        raise InventoryError(
+            f"Could not read '{filename}' to mark it as taken "
+            "(note may have disappeared)",
+            exc.status_code,
+        ) from exc
+    taken_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    new_content = _mark_note_taken(content, taken_at)
+    try:
+        await (await _mcp()).call_tool(
+            "create-note",
+            {"filename": filename, "content": new_content, "overwrite": True},
+        )
+    except MCPError as exc:
+        raise InventoryError(
+            f"Could not write the taken marker to '{filename}'",
+            exc.status_code,
+        ) from exc
     return TakeInventoryResponse(
-        removed=True,
+        taken=True,
         type="item",
-        path=_as_filename(stem),
+        path=filename,
         name=_item_name(stem),
-        properties=properties,
+        taken_at=taken_at,
+        properties=_public_properties(_parse_frontmatter(new_content)),
     )
 
 
