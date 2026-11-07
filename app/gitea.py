@@ -581,6 +581,53 @@ async def create_file(file: FileCreate) -> dict:
     return result
 
 
+# NOTE: registered BEFORE GiteaGetFile, whose `{path:path}` catch-all would
+# otherwise swallow the fixed `ls` segment (Starlette matches in registration
+# order). The fixed segment comes right after `/files` so the two routes are
+# unambiguous — a file literally named `ls` is still fetchable via GiteaGetFile.
+@router.get(
+    "/files/ls/{owner}/{repo}/{path:path}",
+    summary="List files in directory",
+    operation_id="GiteaListFiles",
+)
+async def list_files(
+    owner: str,
+    repo: str,
+    path: str = "",
+    branch: str = Query(default="", description="Branch name"),
+    filter: str = Query(
+        default="", description="Glob pattern to filter by (e.g. '*.py', 'README*')"
+    ),
+) -> list[FileListResponse]:
+    """
+    List files and directories at the given path.
+
+    Supports an optional glob filter to narrow results.
+    """
+    params = {"ref": branch} if branch else {}
+
+    entries = await _gitea_request(
+        "GET",
+        f"{settings.gitea_api_url}/repos/{owner}/{repo}/contents/{path}",
+        params=params,
+    )
+
+    # Apply filter if provided
+    if filter:
+        entries = [e for e in entries if fnmatch.fnmatch(e.get("name", ""), filter)]
+
+    return [
+        FileListResponse(
+            name=e.get("name", ""),
+            path=e.get("path", ""),
+            type=e.get("type", "file"),
+            size=e.get("size", 0),
+            download_url=e.get("download_url", ""),
+        )
+        for e in entries
+    ]
+
+
 @router.get(
     "/files/{owner}/{repo}/{path:path}",
     summary="Get file contents",
@@ -629,49 +676,6 @@ async def get_file(
     if encoding == "base64":
         return base64.b64decode(content).decode("utf-8")
     return content
-
-
-@router.get(
-    "/files/{owner}/{repo}/{path:path}/ls",
-    summary="List files in directory",
-    operation_id="GiteaListFiles",
-)
-async def list_files(
-    owner: str,
-    repo: str,
-    path: str = "",
-    branch: str = Query(default="", description="Branch name"),
-    filter: str = Query(
-        default="", description="Glob pattern to filter by (e.g. '*.py', 'README*')"
-    ),
-) -> list[FileListResponse]:
-    """
-    List files and directories at the given path.
-
-    Supports an optional glob filter to narrow results.
-    """
-    params = {"ref": branch} if branch else {}
-
-    entries = await _gitea_request(
-        "GET",
-        f"{settings.gitea_api_url}/repos/{owner}/{repo}/contents/{path}",
-        params=params,
-    )
-
-    # Apply filter if provided
-    if filter:
-        entries = [e for e in entries if fnmatch.fnmatch(e.get("name", ""), filter)]
-
-    return [
-        FileListResponse(
-            name=e.get("name", ""),
-            path=e.get("path", ""),
-            type=e.get("type", "file"),
-            size=e.get("size", 0),
-            download_url=e.get("download_url", ""),
-        )
-        for e in entries
-    ]
 
 
 # ─── Issue endpoints ────────────────────────────────────────────────────────

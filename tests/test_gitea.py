@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import httpx
 import pytest
 import respx
@@ -573,3 +575,91 @@ def test_search_repos_propagates_api_error_mid_walk(client, gitea_env):
 
     assert resp.status_code == 500
     assert "boom" in resp.json()["detail"]
+
+
+# ─── File listing (GiteaListFiles) routing ──────────────────────────────────
+
+
+def _listing_entries():
+    """A Gitea contents listing (files + a subdir), e.g. for ``src/``."""
+    return [
+        {
+            "name": "a.py",
+            "path": "src/a.py",
+            "type": "file",
+            "size": 10,
+            "download_url": f"{GITEA_BASE}/o/r/raw/main/src/a.py",
+        },
+        {"name": "sub", "path": "src/sub", "type": "dir", "size": 0, "download_url": ""},
+    ]
+
+
+def test_list_files_lists_directory_without_ls_in_upstream_path(client, gitea_env):
+    """GiteaListFiles must request ``contents/<path>`` — the fixed ``ls``
+    segment of the companion URL must not leak into the Gitea path. The old
+    catch-all route swallowed it, so every listing 404'd as a fetch of a
+    file literally named ``ls``."""
+    with respx.mock(assert_all_called=False) as rx:
+        upstream = rx.get(f"{GITEA_API}/repos/o/r/contents/src").mock(
+            return_value=httpx.Response(200, json=_listing_entries())
+        )
+        resp = client.get("/gitea/files/ls/o/r/src")
+
+    assert resp.status_code == 200
+    assert upstream.called
+    body = resp.json()
+    assert [e["name"] for e in body] == ["a.py", "sub"]
+    assert body[0]["type"] == "file"
+
+
+def test_list_files_repo_root(client, gitea_env):
+    """An empty path (repo root) hits ``contents/`` and lists the root."""
+    with respx.mock(assert_all_called=False) as rx:
+        upstream = rx.get(f"{GITEA_API}/repos/o/r/contents/").mock(
+            return_value=httpx.Response(200, json=_listing_entries())
+        )
+        resp = client.get("/gitea/files/ls/o/r/")
+
+    assert resp.status_code == 200
+    assert upstream.called
+    assert [e["name"] for e in resp.json()] == ["a.py", "sub"]
+
+
+def test_list_files_applies_glob_filter(client, gitea_env):
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get(f"{GITEA_API}/repos/o/r/contents/src").mock(
+            return_value=httpx.Response(200, json=_listing_entries())
+        )
+        resp = client.get("/gitea/files/ls/o/r/src", params={"filter": "*.py"})
+
+    assert resp.status_code == 200
+    assert [e["name"] for e in resp.json()] == ["a.py"]
+
+
+def test_list_files_sends_branch_ref(client, gitea_env):
+    with respx.mock(assert_all_called=False) as rx:
+        upstream = rx.get(f"{GITEA_API}/repos/o/r/contents/src").mock(
+            return_value=httpx.Response(200, json=_listing_entries())
+        )
+        resp = client.get("/gitea/files/ls/o/r/src", params={"branch": "dev"})
+
+    assert resp.status_code == 200
+    assert upstream.calls[-1].request.url.params["ref"] == "dev"
+
+
+def test_get_file_named_ls_is_still_a_file_fetch(client, gitea_env):
+    """The fixed ``ls`` segment must not shadow files literally named ``ls``
+    — GiteaGetFile on such a path must fetch the file, not list its parent."""
+    content = base64.b64encode(b"#!/bin/sh\n").decode()
+    with respx.mock(assert_all_called=False) as rx:
+        upstream = rx.get(f"{GITEA_API}/repos/o/r/contents/scripts/ls").mock(
+            return_value=httpx.Response(
+                200, json={"content": content, "encoding": "base64"}
+            )
+        )
+        resp = client.get("/gitea/files/o/r/scripts/ls")
+
+    assert resp.status_code == 200
+    assert upstream.called
+    # GiteaGetFile returns a str, which FastAPI JSON-encodes.
+    assert resp.json() == "#!/bin/sh\n"
