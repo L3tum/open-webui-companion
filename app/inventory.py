@@ -24,7 +24,7 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import yaml
@@ -106,7 +106,9 @@ class FindInventoryRequest(BaseModel):
             "inventory/ (e.g. 'office' or 'office/drawer')."
         ),
     )
-    limit: int = Field(50, ge=1, le=200, description="Maximum number of results to return.")
+    limit: int = Field(
+        50, ge=1, le=200, description="Maximum number of results to return."
+    )
     details: bool = Field(
         False,
         description="Also fetch the properties (frontmatter) of the returned items.",
@@ -191,18 +193,24 @@ class InventoryEntry(BaseModel):
         default_factory=dict,
         description="Frontmatter properties (requires details=true for items).",
     )
-    snippet: str | None = Field(None, description="Content snippet (query matches only).")
+    snippet: str | None = Field(
+        None, description="Content snippet (query matches only)."
+    )
 
 
 class FindInventoryResponse(BaseModel):
     type: Literal["item", "location"]
     count: int
-    truncated: bool = Field(..., description="True when more matches exist than were returned.")
+    truncated: bool = Field(
+        ..., description="True when more matches exist than were returned."
+    )
     results: list[InventoryEntry]
 
 
 class AddInventoryResponse(BaseModel):
-    created: bool = Field(..., description="False when the note already existed (idempotent).")
+    created: bool = Field(
+        ..., description="False when the note already existed (idempotent)."
+    )
     type: Literal["item", "location"]
     path: str
     location: str | None = None
@@ -256,7 +264,9 @@ def _normalize_location(raw: str | None) -> str:
     loc = loc.strip("/").strip()
     if loc.lower().endswith(".md"):
         loc = loc[: -len(".md")]
-    segments = [s for s in (_sanitize_segment(p) for p in loc.split("/")) if s and s != "."]
+    segments = [
+        s for s in (_sanitize_segment(p) for p in loc.split("/")) if s and s != "."
+    ]
     return "/".join(segments)
 
 
@@ -314,7 +324,11 @@ def _as_name_list(result: Any) -> list[str]:
         entries = result
     elif isinstance(result, dict):
         entries = next(
-            (result[k] for k in ("notes", "items", "results", "names") if isinstance(result.get(k), list)),
+            (
+                result[k]
+                for k in ("notes", "items", "results", "names")
+                if isinstance(result.get(k), list)
+            ),
             [],
         )
     else:
@@ -383,8 +397,11 @@ def _search_hits(result: Any) -> list[tuple[str, str | None]]:
         entries = result
     elif isinstance(result, dict):
         entries = next(
-            (result[k] for k in ("results", "items", "matches", "notes", "hits")
-             if isinstance(result.get(k), list)),
+            (
+                result[k]
+                for k in ("results", "items", "matches", "notes", "hits")
+                if isinstance(result.get(k), list)
+            ),
             [],
         )
     else:
@@ -397,17 +414,24 @@ def _search_hits(result: Any) -> list[tuple[str, str | None]]:
             filename = entry
         elif isinstance(entry, dict):
             filename = next(
-                (entry[k] for k in ("filename", "name", "path", "note")
-                 if isinstance(entry.get(k), str) and entry.get(k)),
+                (
+                    entry[k]
+                    for k in ("filename", "name", "path", "note")
+                    if isinstance(entry.get(k), str) and entry.get(k)
+                ),
                 None,
             )
-            snippet = entry.get("snippet") or entry.get("preview") or entry.get("excerpt")
+            snippet = (
+                entry.get("snippet") or entry.get("preview") or entry.get("excerpt")
+            )
             if not isinstance(snippet, str):
                 matches = entry.get("matches")
                 if isinstance(matches, list) and matches:
                     first = matches[0]
-                    snippet = first if isinstance(first, str) else (
-                        first.get("line") if isinstance(first, dict) else None
+                    snippet = (
+                        first
+                        if isinstance(first, str)
+                        else (first.get("line") if isinstance(first, dict) else None)
                     )
         if not isinstance(filename, str) or not filename:
             continue
@@ -501,7 +525,10 @@ async def _resolve_location(raw: str, folders: list[str]) -> str:
             raise InventoryError(
                 f"Location '{raw}' is ambiguous",
                 409,
-                extra={"candidates": match, "hint": "Pass a more specific location path."},
+                extra={
+                    "candidates": match,
+                    "hint": "Pass a more specific location path.",
+                },
             )
     raise InventoryError(
         f"Location '{raw}' does not exist. Create it first with "
@@ -524,7 +551,11 @@ def _yaml_scalar(value: str) -> str:
 
 
 def _build_note_content(
-    kind: str, title: str, location_rel: str, properties: dict[str, str] | None, description: str | None
+    kind: str,
+    title: str,
+    location_rel: str,
+    properties: dict[str, str] | None,
+    description: str | None,
 ) -> str:
     """Frontmatter (machine-readable) + body table (human-readable)."""
     props = properties or {}
@@ -536,7 +567,14 @@ def _build_note_content(
     ]
     for key, value in props.items():
         lines.append(f"{_yaml_scalar(str(key))}: {_yaml_scalar(str(value))}")
-    lines += ["---", "", f"# {title}", "", f"**Location:** `{location_rel or INVENTORY_ROOT}`", ""]
+    lines += [
+        "---",
+        "",
+        f"# {title}",
+        "",
+        f"**Location:** `{location_rel or INVENTORY_ROOT}`",
+        "",
+    ]
     if props:
         lines += ["| Property | Value |", "| --- | --- |"]
         lines += [f"| {_md_cell(k)} | {_md_cell(v)} |" for k, v in props.items()]
@@ -591,7 +629,9 @@ def _mark_note_taken(content: str, taken_at: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _entry_for_item(name: str, details: bool, snippet: str | None = None) -> InventoryEntry:
+async def _entry_for_item(
+    name: str, details: bool, snippet: str | None = None
+) -> InventoryEntry:
     stem = _note_stem(name)
     entry = InventoryEntry(
         path=_as_filename(stem),
@@ -636,7 +676,11 @@ async def find_inventory(request: FindInventoryRequest) -> FindInventoryResponse
             {_relative(_note_stem(f)) for f in folders} - {""}
         )  # drop the inventory/ root itself
         if location_rel:
-            candidates = [c for c in candidates if c == location_rel or c.startswith(location_rel + "/")]
+            candidates = [
+                c
+                for c in candidates
+                if c == location_rel or c.startswith(location_rel + "/")
+            ]
         if query:
             candidates = [c for c in candidates if query.lower() in c.lower()]
         truncated = truncated or len(candidates) > request.limit
@@ -663,10 +707,13 @@ async def find_inventory(request: FindInventoryRequest) -> FindInventoryResponse
             hits = [
                 (n, s)
                 for n, s in hits
-                if (loc := _item_location(_note_stem(n))) in (location_rel, location_rel + "/")
+                if (loc := _item_location(_note_stem(n)))
+                in (location_rel, location_rel + "/")
                 or loc.startswith(location_rel + "/")
             ]
-        path_hits = [n for n in items if query.lower() in _relative(_note_stem(n)).lower()]
+        path_hits = [
+            n for n in items if query.lower() in _relative(_note_stem(n)).lower()
+        ]
         ordered: list[str] = []
         seen: set[str] = set()
         for n, _snippet in hits:
@@ -720,7 +767,11 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
     names, _ = await _list_notes()
     folders = [n for n in names if _is_folder(n)]
     items = {n for n in names if not _is_folder(n)}
-    props = {k: str(v).strip() for k, v in (request.properties or {}).items() if str(v).strip()}
+    props = {
+        k: str(v).strip()
+        for k, v in (request.properties or {}).items()
+        if str(v).strip()
+    }
 
     if request.type == "location":
         target = _normalize_location(request.name)
@@ -728,7 +779,8 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
             raise InventoryError(f"'{request.name}' is not a usable location path", 400)
         path = f"inventory/{target}/"
         existing = next(
-            (f for f in folders if _relative(_note_stem(f)).lower() == target.lower()), None
+            (f for f in folders if _relative(_note_stem(f)).lower() == target.lower()),
+            None,
         )
         if existing:
             return AddInventoryResponse(
@@ -839,7 +891,9 @@ async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse
             ]
         else:
             candidates = [
-                n for n in items if _note_stem(n).rsplit("/", 1)[-1].lower() == base.lower()
+                n
+                for n in items
+                if _note_stem(n).rsplit("/", 1)[-1].lower() == base.lower()
             ]
     if not candidates:
         raise InventoryError(f"No inventory item matching '{raw}' was found", 404)
@@ -862,7 +916,7 @@ async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse
             "(note may have disappeared)",
             exc.status_code,
         ) from exc
-    taken_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    taken_at = datetime.now(UTC).isoformat(timespec="seconds")
     new_content = _mark_note_taken(content, taken_at)
     try:
         await (await _mcp()).call_tool(
@@ -916,7 +970,9 @@ async def inventory_health() -> dict[str, Any]:
         "status": "ok",
         "mcp_configured": True,
         "inventory": {
-            "locations": sorted(f[len(INVENTORY_ROOT) + 1 :] for f in folders if f != INVENTORY_ROOT),
+            "locations": sorted(
+                f[len(INVENTORY_ROOT) + 1 :] for f in folders if f != INVENTORY_ROOT
+            ),
             "item_count": sum(1 for n in names if not _is_folder(n)),
             "truncated": truncated,
         },

@@ -590,7 +590,13 @@ def _listing_entries():
             "size": 10,
             "download_url": f"{GITEA_BASE}/o/r/raw/main/src/a.py",
         },
-        {"name": "sub", "path": "src/sub", "type": "dir", "size": 0, "download_url": ""},
+        {
+            "name": "sub",
+            "path": "src/sub",
+            "type": "dir",
+            "size": 0,
+            "download_url": "",
+        },
     ]
 
 

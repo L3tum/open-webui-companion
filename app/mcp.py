@@ -55,7 +55,7 @@ def _sse_messages(body: str) -> list[dict]:
     for raw in body.splitlines():
         line = raw.strip()
         if line.startswith("data:"):
-            data.append(line[len("data:"):].strip())
+            data.append(line[len("data:") :].strip())
         elif not line and data:
             flush()
     flush()
@@ -243,7 +243,9 @@ class MCPClient:
         if not isinstance(result, dict):
             raise MCPError(f"silverbullet-mcp tool '{name}' produced no result")
         if result.get("isError"):
-            raise MCPError(f"silverbullet-mcp tool '{name}' failed: {self._tool_text(result)}")
+            raise MCPError(
+                f"silverbullet-mcp tool '{name}' failed: {self._tool_text(result)}"
+            )
         structured = result.get("structuredContent")
         if structured is not None:
             return structured
