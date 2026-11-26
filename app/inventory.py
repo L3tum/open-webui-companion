@@ -2,10 +2,14 @@
 
 Storage layout (SilverBullet note names, relative to the workspace root):
 
-    inventory/                          # the inventory root (implicit)
-    inventory/<location>/               # a location is a *folder note*
-    inventory/<location>/<sub>/...      # nested locations
-    inventory/<location>/<item>.md      # an item is a regular note
+    inventory/<location>.md             # a location is a regular .md note
+    inventory/<location>/<sub>.md       # a nested (sub-)location
+    inventory/<location>/<item>.md      # an item is a regular .md note
+
+Every note is a regular ``.md`` file — the deployed SilverBullet MCP
+server rejects filenames without a ``.md`` extension and only lists
+``.md`` files. A note is a *location* when other notes live under it
+(its stem is a prefix of other note stems); otherwise it is an *item*.
 
 Items carry arbitrary properties (e.g. ``colour``, ``cable length``)
 which are written both into the YAML frontmatter (machine-readable) and
@@ -182,7 +186,7 @@ class InventoryEntry(BaseModel):
 
     path: str = Field(
         ...,
-        description="SilverBullet note name: items end in '.md', locations in '/'.",
+        description="SilverBullet note name ('.md' notes for items and locations alike)."
     )
     name: str = Field(..., description="Basename of the note (without extension).")
     location: str = Field(
@@ -271,17 +275,19 @@ def _normalize_location(raw: str | None) -> str:
 
 
 def _note_stem(name: str) -> str:
-    """'inventory/a/b.md' -> 'inventory/a/b'; 'inventory/a/' -> 'inventory/a'."""
+    """'inventory/a/b.md' -> 'inventory/a/b' ('/' suffixes are legacy)."""
     n = name
-    if n.endswith("/"):
+    if n.endswith("/"):  # legacy folder-style names
         return n.rstrip("/")
     if n.lower().endswith(".md"):
         return n[: -len(".md")]
     return n
 
 
-def _is_folder(name: str) -> bool:
-    return name.endswith("/")
+def _has_children(names: set[str], name: str) -> bool:
+    """True when other notes live under ``name`` (it is a location)."""
+    prefix = _note_stem(name) + "/"
+    return any(n.startswith(prefix) for n in names)
 
 
 def _relative(stem: str) -> str:
@@ -304,9 +310,7 @@ def _item_name(stem: str) -> str:
 
 
 def _as_filename(name: str) -> str:
-    """Canonical MCP filename: folders keep '/', docs get '.md'."""
-    if name.endswith("/"):
-        return name
+    """Canonical MCP filename: always a '.md' note."""
     return name if name.endswith(".md") else name + ".md"
 
 
@@ -435,7 +439,7 @@ def _search_hits(result: Any) -> list[tuple[str, str | None]]:
                     )
         if not isinstance(filename, str) or not filename:
             continue
-        if not filename.startswith(INVENTORY_ROOT) or filename.endswith("/"):
+        if not filename.startswith(INVENTORY_ROOT):
             continue
         hits.append((filename, snippet if isinstance(snippet, str) else None))
     return hits
@@ -500,8 +504,8 @@ def _md_cell(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_location(raw: str, folders: list[str]) -> str:
-    """Resolve a user-supplied location to an existing folder.
+async def _resolve_location(raw: str, notes: list[str]) -> str:
+    """Resolve a user-supplied location to an existing location note.
 
     Matching order: exact path, unique leaf name, unique path suffix,
     unique substring. Raises :class:`InventoryError` (409 with
@@ -510,14 +514,14 @@ async def _resolve_location(raw: str, folders: list[str]) -> str:
     target = _normalize_location(raw)
     if not target:
         raise InventoryError(f"Location '{raw}' is not a usable location path", 400)
-    rel_folders = sorted({_relative(_note_stem(f)) for f in folders} - {""})
+    rel_notes = sorted({_relative(_note_stem(n)) for n in notes} - {""})
     t = target.lower()
 
     for match in (
-        [r for r in rel_folders if r.lower() == t],
-        [r for r in rel_folders if r.rsplit("/", 1)[-1].lower() == t],
-        [r for r in rel_folders if r.lower().endswith("/" + t)],
-        [r for r in rel_folders if t in r.lower()],
+        [r for r in rel_notes if r.lower() == t],
+        [r for r in rel_notes if r.rsplit("/", 1)[-1].lower() == t],
+        [r for r in rel_notes if r.lower().endswith("/" + t)],
+        [r for r in rel_notes if t in r.lower()],
     ):
         if len(match) == 1:
             return match[0]
@@ -657,23 +661,25 @@ async def _entry_for_item(
 async def find_inventory(request: FindInventoryRequest) -> FindInventoryResponse:
     """Search or list the inventory.
 
-    Default (``type='item'``): lists/searches item notes. With
-    ``type='location'`` it lists locations (folder notes). A ``query``
-    triggers a full-text search over names and content; without one
-    everything (up to ``limit``) is listed. ``location`` restricts
-    results to a location subtree.
+    Default (``type='item'``): lists/searches item notes (notes that
+    contain no other notes). With ``type='location'`` it lists
+    locations — notes that contain other notes. A ``query`` triggers a
+    full-text search over names and content; without one everything
+    (up to ``limit``) is listed. ``location`` restricts results to a
+    location subtree.
     """
     settings.require_silverbullet_mcp_config()
     names, list_truncated = await _list_notes()
-    folders = [n for n in names if _is_folder(n)]
-    items = [n for n in names if not _is_folder(n)]
+    names_set = set(names)
+    locations = [n for n in names if _has_children(names_set, n)]
+    items = [n for n in names if not _has_children(names_set, n)]
     query = (request.query or "").strip()
     location_rel = _normalize_location(request.location)
     truncated = list_truncated
 
     if request.type == "location":
         candidates = sorted(
-            {_relative(_note_stem(f)) for f in folders} - {""}
+            {_relative(_note_stem(f)) for f in locations} - {""}
         )  # drop the inventory/ root itself
         if location_rel:
             candidates = [
@@ -687,7 +693,7 @@ async def find_inventory(request: FindInventoryRequest) -> FindInventoryResponse
         ordered = candidates[: request.limit]
         results = [
             InventoryEntry(
-                path=f"inventory/{c}/",
+                path=f"inventory/{c}.md",
                 name=c.rsplit("/", 1)[-1],
                 location=c.rsplit("/", 1)[0] if "/" in c else "",
             )
@@ -703,6 +709,7 @@ async def find_inventory(request: FindInventoryRequest) -> FindInventoryResponse
         except MCPError:
             logger.warning("search-notes failed; falling back to name matching only")
             hits = []
+        hits = [(n, s) for n, s in hits if n in set(items)]  # items only
         if location_rel:
             hits = [
                 (n, s)
@@ -758,15 +765,14 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
     """Add an item (``type='item'``, default) or a location
     (``type='location'``).
 
-    For items: the location is resolved against existing folders —
-    a full path, or a unique leaf/suffix/substring. Ambiguous
-    locations are rejected with the candidates (HTTP 409); missing
-    ones with a hint to create them first (HTTP 404).
+    For items: the location is resolved against existing notes under
+    inventory/ — a full path, or a unique leaf/suffix/substring.
+    Ambiguous locations are rejected with the candidates (HTTP 409);
+    missing ones with a hint to create them first (HTTP 404).
     """
     settings.require_silverbullet_mcp_config()
     names, _ = await _list_notes()
-    folders = [n for n in names if _is_folder(n)]
-    items = {n for n in names if not _is_folder(n)}
+    names_set = set(names)
     props = {
         k: str(v).strip()
         for k, v in (request.properties or {}).items()
@@ -777,9 +783,9 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
         target = _normalize_location(request.name)
         if not target:
             raise InventoryError(f"'{request.name}' is not a usable location path", 400)
-        path = f"inventory/{target}/"
+        path = f"inventory/{target}.md"
         existing = next(
-            (f for f in folders if _relative(_note_stem(f)).lower() == target.lower()),
+            (n for n in names if _relative(_note_stem(n)).lower() == target.lower()),
             None,
         )
         if existing:
@@ -816,9 +822,9 @@ async def add_inventory(request: AddInventoryRequest) -> AddInventoryResponse:
             "AddInventory(type='location').",
             400,
         )
-    loc_rel = await _resolve_location(request.location, folders)
+    loc_rel = await _resolve_location(request.location, names)
     path = f"inventory/{loc_rel}/{name}.md"
-    if path in items and not request.overwrite:
+    if path in names_set and not request.overwrite:
         raise InventoryError(
             f"Item '{name}' already exists in '{loc_rel}' "
             f"(inventory/{loc_rel}/{name}.md). Pass overwrite=true to replace it.",
@@ -863,14 +869,14 @@ async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse
     if request.type == "location":
         raise InventoryError(
             "TakeInventory no longer removes anything: items are only "
-            "marked as taken in their frontmatter. Locations are folders "
-            "and cannot be taken — remove them manually in SilverBullet "
-            "if you want them gone.",
+            "marked as taken in their frontmatter. Locations are "
+            "container notes and cannot be taken — delete them manually "
+            "in SilverBullet if you want them gone.",
             400,
         )
     names, _ = await _list_notes()
-    folders = [n for n in names if _is_folder(n)]
-    items = [n for n in names if not _is_folder(n)]
+    names_set = set(names)
+    items = [n for n in names if not _has_children(names_set, n)]
 
     # --- items -------------------------------------------------------------
     raw = request.name.strip()
@@ -882,7 +888,7 @@ async def take_inventory(request: TakeInventoryRequest) -> TakeInventoryResponse
         if not base:
             raise InventoryError(f"'{raw}' is not a usable item name", 400)
         if request.location:
-            loc_rel = await _resolve_location(request.location, folders)
+            loc_rel = await _resolve_location(request.location, names)
             candidates = [
                 n
                 for n in items
@@ -965,15 +971,16 @@ async def inventory_health() -> dict[str, Any]:
             "error": str(exc),
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         }
-    folders = {f.rstrip("/") for f in names if _is_folder(f)}
+    names_set = set(names)
+    locations = {
+        _relative(_note_stem(n)) for n in names if _has_children(names_set, n)
+    }
     return {
         "status": "ok",
         "mcp_configured": True,
         "inventory": {
-            "locations": sorted(
-                f[len(INVENTORY_ROOT) + 1 :] for f in folders if f != INVENTORY_ROOT
-            ),
-            "item_count": sum(1 for n in names if not _is_folder(n)),
+            "locations": sorted(locations - {""}),
+            "item_count": sum(1 for n in names if not _has_children(names_set, n)),
             "truncated": truncated,
         },
         "elapsed_ms": round((time.monotonic() - started) * 1000),

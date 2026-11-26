@@ -99,8 +99,9 @@ disabled via `VET_ENABLE_MENTIONS=false`.
 - **VetHealth**: Check vetting dependencies
 
 ## Inventory (Homebox-style, backed by SilverBullet notes under inventory/)
-Locations are folders, items are notes; arbitrary properties are written
-to both frontmatter and the page body.
+Locations and items are regular .md notes; a note containing other
+notes is a location. Arbitrary properties are written to both
+frontmatter and the page body.
 - **FindInventory**: Find items (default) or locations (type='location')
 - **AddInventory**: Add an item, or create a location (type='location')
 - **TakeInventory**: Mark an item as taken in its frontmatter (taken: true + taken_at); nothing is deleted
