@@ -95,7 +95,8 @@ class MCPMock:
                 if filename not in self.note_contents:
                     return self._tool_error(req_id, f"Note not found: {filename}")
                 return self._tool_response(
-                    req_id, {"filename": filename, "content": self.note_contents[filename]}
+                    req_id,
+                    {"filename": filename, "content": self.note_contents[filename]},
                 )
             if name == "search-notes":
                 return self._tool_response(req_id, {"results": self.search_results})
@@ -145,7 +146,9 @@ def test_add_location_creates_md_note(client, mcp_env):
     mock = MCPMock(notes=[])
     with respx.mock(assert_all_called=False) as rx:
         rx.post(MCP_URL).mock(side_effect=mock.side_effect)
-        resp = client.post("/inventory/add", json={"type": "location", "name": "Office"})
+        resp = client.post(
+            "/inventory/add", json={"type": "location", "name": "Office"}
+        )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["created"] is True
@@ -162,7 +165,9 @@ def test_add_location_is_idempotent_when_note_exists(client, mcp_env):
     mock = MCPMock(notes=["inventory/Office.md"])
     with respx.mock(assert_all_called=False) as rx:
         rx.post(MCP_URL).mock(side_effect=mock.side_effect)
-        resp = client.post("/inventory/add", json={"type": "location", "name": "Office"})
+        resp = client.post(
+            "/inventory/add", json={"type": "location", "name": "Office"}
+        )
     assert resp.status_code == 200
     body = resp.json()
     assert body["created"] is False
@@ -176,7 +181,9 @@ def test_add_location_reports_mcp_conflict(client, mcp_env):
     mock.create_error = "Note already exists"
     with respx.mock(assert_all_called=False) as rx:
         rx.post(MCP_URL).mock(side_effect=mock.side_effect)
-        resp = client.post("/inventory/add", json={"type": "location", "name": "Office"})
+        resp = client.post(
+            "/inventory/add", json={"type": "location", "name": "Office"}
+        )
     assert resp.status_code == 200
     assert resp.json()["created"] is False
 
@@ -308,8 +315,7 @@ def test_find_items_search_returns_matching_item(client, mcp_env):
 
 def test_take_item_marks_frontmatter(client, mcp_env):
     existing = (
-        "---\ntype: item\ntitle: USB-C Cable\nlocation: office\n---\n\n"
-        "# USB-C Cable\n"
+        "---\ntype: item\ntitle: USB-C Cable\nlocation: office\n---\n\n# USB-C Cable\n"
     )
     mock = MCPMock(
         notes=["inventory/office/USB-C Cable.md"],

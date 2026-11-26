@@ -186,7 +186,7 @@ class InventoryEntry(BaseModel):
 
     path: str = Field(
         ...,
-        description="SilverBullet note name ('.md' notes for items and locations alike)."
+        description="SilverBullet note name ('.md' notes for items and locations alike).",
     )
     name: str = Field(..., description="Basename of the note (without extension).")
     location: str = Field(
@@ -972,9 +972,7 @@ async def inventory_health() -> dict[str, Any]:
             "elapsed_ms": round((time.monotonic() - started) * 1000),
         }
     names_set = set(names)
-    locations = {
-        _relative(_note_stem(n)) for n in names if _has_children(names_set, n)
-    }
+    locations = {_relative(_note_stem(n)) for n in names if _has_children(names_set, n)}
     return {
         "status": "ok",
         "mcp_configured": True,
